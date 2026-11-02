@@ -1,0 +1,288 @@
+# Origin Media Server — Example Configuration
+# Copy to config.toml and edit before running.
+
+[server]
+# Human-readable name for this node (shown in panel)
+node_name = "origin-node-1"
+
+# Data directory: SQLite DB, DVR segments, HLS/DASH cache
+data_dir = "./data"
+
+# Log level: debug | info | warn | error
+log_level = "info"
+
+# Log format: text | json
+log_format = "text"
+
+# ─────────────────────────────────────────────────────────────
+# HTTP — serves HLS/DASH/WHIP/WHEP/API/Panel on one port
+# ─────────────────────────────────────────────────────────────
+[http]
+listen = "0.0.0.0:8080"
+
+# TLS for HTTPS (enables RTMPS, WHIP, WHEP over HTTPS)
+tls_enabled  = false
+tls_cert     = "./certs/server.crt"
+tls_key      = "./certs/server.key"
+
+# CORS allowed origins for the panel (set to panel domain in prod)
+cors_origins = ["http://localhost:3000", "http://localhost:8080"]
+
+# ─────────────────────────────────────────────────────────────
+# RTMP ingest
+# ─────────────────────────────────────────────────────────────
+[rtmp]
+listen     = "0.0.0.0:1935"
+# RTMPS (TLS over RTMP)
+tls_listen = "0.0.0.0:1936"
+tls_enabled = false
+
+# Maximum time (ms) a publisher can be idle before disconnecting
+idle_timeout_ms = 10000
+
+# Maximum simultaneous ingest connections per application
+max_connections_per_app = 50
+
+# ─────────────────────────────────────────────────────────────
+# RTMP Applications
+# Each application is an RTMP "app" (the path after rtmp://host/).
+# ─────────────────────────────────────────────────────────────
+[[rtmp.applications]]
+name = "live"
+
+# Require a stream key to publish (stream_key is appended to stream name
+# or validated separately). Set to "" to allow all.
+publish_key = ""
+
+# ── ABR Wildcard Patterns (FMLE %i multi-bitrate support) ──
+# When an encoder like FMLE publishes multiple streams named
+# "camera_1", "camera_2", "camera_3" over ONE TCP connection,
+# these patterns group them into a single ABR rendition set.
+[[rtmp.applications.abr_patterns]]
+# Pattern uses %i as a placeholder for the variant index (integer).
+# Matches: camera_1, camera_2, camera_3, camera_N ...
+pattern    = "camera_%i"
+group_name = "camera"
+
+# auto_detect = true  →  inspect SPS/PPS NAL units on first keyframe
+# to fill in width/height automatically.
+auto_detect = true
+
+# Optional manual hints (override auto_detect or fill gaps).
+# Index must match the %i value in the stream name.
+[[rtmp.applications.abr_patterns.variants]]
+index     = 1
+label     = "240p"
+height    = 240
+bandwidth = 400000
+
+[[rtmp.applications.abr_patterns.variants]]
+index     = 2
+label     = "480p"
+height    = 480
+bandwidth = 900000
+
+[[rtmp.applications.abr_patterns.variants]]
+index     = 3
+label     = "720p"
+height    = 720
+bandwidth = 2500000
+
+[[rtmp.applications.abr_patterns.variants]]
+index     = 4
+label     = "1080p"
+height    = 1080
+bandwidth = 5000000
+
+[[rtmp.applications]]
+name        = "events"
+publish_key = "secret-key-123"
+# Optional RTMP push login (Adobe RTMP authentication): the username/password
+# FMLE prompts for, OBS's "Use authentication", or rtmp://user:pass@host/app
+# in ffmpeg. Empty push_login = no login. Works together with publish_key.
+# Panel-managed applications set these under Applications → Push login.
+push_login    = ""
+push_password = ""
+
+# ─────────────────────────────────────────────────────────────
+# SRT ingest — pure Go (github.com/datarhei/gosrt), no build tag or cgo
+# needed. Encoders connect in "caller" mode with a streamid formatted as
+# "app/streamName" (optionally "app/streamName?key" if publish_key is set
+# on the application) — same DB-managed application/publish-key/
+# allow-any-stream rules as WHIP. Payload must be MPEG-TS (H.264/AAC),
+# demuxed by the same decoder used for MPEG-TS ingest.
+# ─────────────────────────────────────────────────────────────
+[srt]
+enabled = false
+listen  = "0.0.0.0:4000"
+latency_ms   = 200
+passphrase   = ""    # AES encryption passphrase (leave empty to disable)
+
+# ─────────────────────────────────────────────────────────────
+# Icecast ingest — audio-only (MP3 or ADTS AAC), no video. Encoders connect
+# with an HTTP-like SOURCE (Icecast2-native) or PUT (modern HTTP) request
+# whose path is "app/streamName" (e.g. icecast://source:key@host:8005/live/
+# radio1), same convention as SRT's streamid. Authorization: Basic's
+# password is checked against the application's publish_key; the username
+# is ignored (Icecast conventionally sends "source"). Legacy passwordless
+# SHOUTcast v1 handshakes are not supported.
+# ─────────────────────────────────────────────────────────────
+[icecast]
+enabled = false
+listen  = "0.0.0.0:8005"
+
+# ─────────────────────────────────────────────────────────────
+# MPEG-TS ingest
+# ─────────────────────────────────────────────────────────────
+[mpegts]
+# UDP multicast/unicast push
+udp_listen = "0.0.0.0:5000"
+# HTTP pull is configured per-stream in the pull_sources section
+
+# ─────────────────────────────────────────────────────────────
+# HLS output
+# ─────────────────────────────────────────────────────────────
+[hls]
+# Served at: http://host:8080/hls/{app}/{stream}/index.m3u8
+path_prefix = "/hls"
+
+# Target segment duration in seconds (encoder keyframe interval should match)
+segment_duration_s = 6
+
+# Number of segments kept in live playlist window
+playlist_window    = 5
+
+# Output container: ts | fmp4 | cmaf
+# fmp4/cmaf enables Low-Latency HLS
+container = "ts"
+
+# Split fmp4/cmaf output into independent video-only and audio-only
+# playlists/segments (linked via EXT-X-MEDIA in the master playlist)
+# instead of one combined .m4s per segment — needed for strict browser MSE
+# players (hls.js); the combined form already works fine in native/non-MSE
+# clients. No effect on container="ts". Not supported together with
+# ll_hls.enabled (ignored with a warning if both are set).
+separate_audio_track = false
+
+# Low-Latency HLS (only effective when container = fmp4 or cmaf)
+[hls.ll_hls]
+enabled          = false
+part_duration_ms = 200    # target part (sub-segment) duration
+hold_back_parts  = 3      # EXT-X-PART-HOLD-BACK multiplier
+
+# ─────────────────────────────────────────────────────────────
+# MPEG-DASH output
+# ─────────────────────────────────────────────────────────────
+[dash]
+# Served at: http://host:8080/dash/{app}/{stream}/manifest.mpd
+path_prefix        = "/dash"
+segment_duration_s = 4
+min_buffer_time_s  = 8
+
+# DASH timeshift/DVR: keep segments on disk (and advertise via the MPD's
+# timeShiftBufferDepth) for this many seconds instead of cleaning them up
+# immediately, so a compliant DASH client can seek backward within the
+# window using ordinary live $Number$ addressing. 0 disables it.
+dvr_window_s = 0
+
+# ─────────────────────────────────────────────────────────────
+# DVB-DASH profile + EBU-TT-D subtitles
+#
+# EBU-TT-D captions are decoded in REAL TIME from the stream's own
+# CEA-608/708 embedded captions (internal/captiondecode) — not AI-generated,
+# no speech-to-text, negligible CPU cost. Distinct from HLS's
+# #EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS signaling (which only relays the
+# encoder's SEI data for HLS players to decode themselves) — DASH has no
+# equivalent in-video passthrough convention, so this is a real decode +
+# re-encode as a standard fragmented-MP4 'stpp' text track.
+#
+# `enabled` and `subtitles_enabled` are independent: subtitles can be
+# turned on without full DVB-DASH profile conformance, or vice versa.
+# ─────────────────────────────────────────────────────────────
+[dash.dvb]
+enabled           = false  # MPD@profiles DVB-DASH URNs, UTCTiming, BaseURL dvb:priority/weight, suppresses suggestedPresentationDelay
+subtitles_enabled = false  # EBU-TT-D subtitle AdaptationSet (codecs="stpp")
+
+# ─────────────────────────────────────────────────────────────
+# DVR / nDVR
+# ─────────────────────────────────────────────────────────────
+[dvr]
+# nDVR: records streams once as fMP4 and serves rewind playback over both
+# HLS and DASH from that one recording (internal/dvr):
+#   /<app>/<stream>/playlist_dvr.m3u8              whole window, live, seekable
+#   /<app>/<stream>/manifest_dvr.mpd               same, DASH
+#   /<app>/<stream>/playlist_dvr_range-<unix_from>-<seconds>.m3u8   VOD range
+#   /<app>/<stream>/manifest_dvr_range-<unix_from>-<seconds>.mpd
+#   /<app>/<stream>/playlist_dvr_timeshift-<delay_s>[-<depth_s>].m3u8  delayed live
+#   /<app>/<stream>/manifest_dvr_timeshift-<delay_s>[-<depth_s>].mpd
+#
+# true records every stream. Leave false to enable it per application
+# (panel: Applications → nDVR) or per stream config (-1 inherit / 0 / 1).
+enabled        = false
+storage_path   = "./data/dvr"
+# Default rewind window: segments older than this are deleted. Applications
+# and stream configs can set their own (dvr_window_s, 0 = this value).
+window_seconds = 3600        # 1 hour
+# Segments are cut on keyframes at [hls] segment_duration_s (or the app's
+# HLS segment duration override). The index lives in the main SQLite DB.
+# Records H.264 + AAC (or AAC only); HEVC streams are not recorded yet.
+
+# ─────────────────────────────────────────────────────────────
+# Failover
+# ─────────────────────────────────────────────────────────────
+[failover]
+# Watchdog interval: check for stalled streams every N ms
+watchdog_interval_ms = 1000
+# If no keyframe arrives within this duration, trigger failover
+stall_timeout_ms     = 5000
+# Pre-buffer from backup before switching (smooths transition)
+warmup_buffer_ms     = 2000
+
+# ─────────────────────────────────────────────────────────────
+# WebRTC — WHIP ingest (POST /whip/{app}/{stream}) and WHEP sub-second-
+# latency playback (/whep/{app}/{stream}). WHIP auth: if the application
+# has a publish_key, send it as "Authorization: Bearer <publish_key>".
+# ─────────────────────────────────────────────────────────────
+[webrtc]
+enabled = false
+# STUN/TURN servers for ICE candidate gathering (empty works for same-host/LAN testing)
+ice_servers = []
+# Restrict ICE UDP candidate ports (0 = OS-assigned ephemeral range)
+ice_udp_port_min = 0
+ice_udp_port_max = 0
+
+# ─────────────────────────────────────────────────────────────
+# Authentication
+# ─────────────────────────────────────────────────────────────
+[auth]
+# JWT signing secret — CHANGE IN PRODUCTION
+jwt_secret          = "CHANGE-ME-minimum-32-characters-long"
+jwt_expiry_hours    = 24
+refresh_expiry_days = 7
+
+# Initial admin user created on first run (change password immediately)
+[auth.bootstrap_admin]
+email    = "admin@localhost"
+password = "admin"
+
+# ─────────────────────────────────────────────────────────────
+# Metrics
+# ─────────────────────────────────────────────────────────────
+[metrics]
+# Prometheus scrape endpoint
+path    = "/metrics"
+enabled = true
+
+# ─────────────────────────────────────────────────────────────
+# Multi-node (optional — single-node works without this)
+# When enabled, this node publishes a periodic heartbeat (name, URL, live
+# stream list) over NATS and subscribes to every peer's heartbeat, giving
+# each node an auto-discovered, real-time view of the rest of the cluster —
+# see GET /api/v1/nodes. This is peer discovery/health only, not a central
+# management console (that remains a separate, optional service).
+# ─────────────────────────────────────────────────────────────
+[multinode]
+enabled              = false
+nats_url             = "nats://localhost:4222"
+nats_creds           = ""   # path to NATS credentials file
+heartbeat_interval_s = 5

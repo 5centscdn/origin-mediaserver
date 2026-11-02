@@ -1,0 +1,18 @@
+# Build output
+/origin-mediaserver
+/origin-mediaserver-linux-amd64
+/panel/out/
+/panel/.next/
+/panel/node_modules/
+
+# Runtime data and local config (holds secrets; config.example.toml is the reference)
+/data/
+/config.toml
+/certs/
+*.db
+
+# Local scratch
+/a.txt
+/*.png
+.claude/settings.local.json
+*.tsbuildinfo
