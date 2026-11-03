@@ -23,6 +23,7 @@ type Config struct {
 	WebRTC    WebRTCConfig    `toml:"webrtc"`
 	Auth      AuthConfig      `toml:"auth"`
 	Metrics   MetricsConfig   `toml:"metrics"`
+	LiveCache LiveCacheConfig `toml:"live_cache"`
 	Multinode MultinodeConfig `toml:"multinode"`
 
 	// dvrMu guards DVR.Enabled and DVR.WindowSeconds, the only DVR fields
@@ -242,6 +243,20 @@ type BootstrapAdminConfig struct {
 	Password string `toml:"password"`
 }
 
+// LiveCacheConfig controls where live HLS/DASH output is kept (see
+// internal/livestore). Mode:
+//   - "hybrid" (default): RAM, moving to disk under <data_dir> while memory
+//     use is at or above MemoryHighPct, back to RAM below MemoryLowPct (the
+//     gap stops it switching back and forth at the limit).
+//   - "memory": always RAM; only a warning at MemoryHighPct.
+//   - "disk": always disk.
+type LiveCacheConfig struct {
+	Mode           string `toml:"mode"`
+	MemoryHighPct  int    `toml:"memory_high_pct"`
+	MemoryLowPct   int    `toml:"memory_low_pct"`
+	CheckIntervalS int    `toml:"check_interval_s"`
+}
+
 type MetricsConfig struct {
 	Enabled bool   `toml:"enabled"`
 	Path    string `toml:"path"`
@@ -281,6 +296,20 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	switch c.LiveCache.Mode {
+	case "memory", "disk", "hybrid":
+	default:
+		c.LiveCache.Mode = "hybrid"
+	}
+	if c.LiveCache.MemoryHighPct <= 0 || c.LiveCache.MemoryHighPct > 100 {
+		c.LiveCache.MemoryHighPct = 90
+	}
+	if c.LiveCache.MemoryLowPct <= 0 || c.LiveCache.MemoryLowPct >= c.LiveCache.MemoryHighPct {
+		c.LiveCache.MemoryLowPct = max(c.LiveCache.MemoryHighPct-10, 1)
+	}
+	if c.LiveCache.CheckIntervalS <= 0 {
+		c.LiveCache.CheckIntervalS = 5
+	}
 	if c.Server.DataDir == "" {
 		c.Server.DataDir = "./data"
 	}

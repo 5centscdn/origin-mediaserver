@@ -26,6 +26,9 @@ func AudioCodecString(ci *CodecInfo) string {
 	if ci != nil && ci.AudioCodec == CodecMP2 {
 		return "mp4a.6B"
 	}
+	if ci != nil && ci.AudioCodec == CodecMP3 {
+		return "mp4a.40.34" // the HLS spec's MP3 string, as hls.js and Apple expect
+	}
 	return AACCodecString(ci)
 }
 

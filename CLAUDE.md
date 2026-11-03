@@ -31,7 +31,10 @@ make urls          # prints example ingest/playback URLs
 - `cmd/server/main.go`: wiring. Every ingest protocol's OnPublish/OnLive
   callback calls `streamoutputs.Start`.
 - `internal/media`: the core types (`Stream`, `Bus`, `Packet`, registry,
-  viewer counts, H.264/HEVC SPS parsing, SEI).
+  viewer counts, H.264/HEVC SPS parsing, SEI), plus `H264Retimer`
+  (`retime.go`, `h264poc.go`). The retimer rebuilds DTS, and fixes PTS from
+  the bitstream's picture order count, for H.264 that arrives with one
+  timestamp per picture.
 - Ingest:
   - `rtmp`: server, puller, FMLE `%i` ABR grouping (`abr.go`)
   - `srt`: listener and caller
@@ -40,8 +43,30 @@ make urls          # prints example ingest/playback URLs
   - `ingest/mpegts`: UDP, HTTP pull, demux
   - `ingest/rtsp`
   - `pull`: managed outbound pull sources with reconnect (rtmp, rtsp,
-    mpegts_http, mpegts_udp, srt)
+    mpegts_http, mpegts_udp, srt), and Nimble-style fallback URLs: on
+    failure, or no media for 10 s (an RTMP server with nothing published
+    accepts the play and sends nothing), the next URL is tried at once.
+    While on a fallback the primary is probed every `primary_check_s` and
+    taken back once it has delivered media steadily for 3 s. The probe's
+    connection becomes the live one. Each URL's protocol comes from its
+    scheme (`pull.ProtocolForURL`).
+  - `ingest/mp4file`: an MP4 file played as a looping live source (used by
+    failover's `mp4` backups)
 - Output:
+  - `livestore`: live HLS/DASH output (playlists, MPDs, init segments,
+    segments, LL-HLS parts) is kept in RAM, as Nimble does; only DVR is
+    on disk. Packagers write and delivery reads by the old on-disk path
+    (`<data_dir>/hls|dash/<app>/<stream>/...`), but nothing is written
+    there. Segments expire after a per-stream TTL derived from the
+    playlist/timeline window. Playlists and init segments stay until the
+    packager stops plus a 2 min grace, so a reconnect or pull fallback
+    takes them over. `[live_cache] mode`: `hybrid` (default) moves live
+    output to disk at `memory_high_pct` (system or cgroup memory, page
+    cache excluded) and back to RAM below `memory_low_pct`, so a full
+    memory doesn't get the server OOM-killed; `memory` only warns;
+    `disk` always writes to disk. Mode, memory use, sizes and any
+    warning are in `live_cache` in `GET /api/v1/node`, and the panel
+    shows the warning as a banner on every page.
   - `hls`: TS/fMP4/CMAF, LL-HLS, ad markers
   - `dash`: MPD, DVB-DASH, timeshift
   - `tsout`: continuous HTTP MPEG-TS
@@ -64,7 +89,10 @@ make urls          # prints example ingest/playback URLs
   - `scte35`: parse, generate, dedup, state machine
   - `scte35ctrl`: API-triggered insertion timed on the stream's PTS clock,
     never wall clock
-- `failover`: stall watchdog with backup switching and warmup buffer.
+- `failover`: stall watchdog with backup switching and warmup buffer. A
+  backup is an RTMP pull, or an MP4 file looped in real time
+  (`ingest/mp4file`: pure-Go progressive MP4 reader, H.264 + AAC, local
+  path or http(s) URL cached under `data_dir/failover-cache`).
 - `api`: chi router. REST under `/api/v1`, JWT auth with roles and per-user
   API tokens, delivery routes, WHIP/WHEP.
 - `db`: SQLite schema and access for applications, streams, ABR groups, pull
@@ -84,8 +112,25 @@ make urls          # prints example ingest/playback URLs
 - Package and function doc comments explain *why* and link to related code.
   Match that density.
 - Media timing uses the stream's PTS domain, not wall-clock time.
+- Every `Packet` on a `Bus` must have DTS that increases and is <= PTS: the
+  DVR recorder treats a backwards DTS as a discontinuity, and fMP4 needs
+  increasing sample times. Ingest that has only one timestamp per picture
+  runs H.264 slices through `media.H264Retimer` (D-picture reorder buffer,
+  POC order). That's MPEG-TS that never sends DTS (`ingest/mpegts`, used by
+  UDP/HTTP/SRT/pull) and RTP (`ingest/rtsp`). A PTS-only PES in a stream
+  that has sent DTS means DTS = PTS (muxers drop it when equal), so the
+  demuxer's "no DTS" check is sticky per stream, not per packet. Same fix
+  as the standalone DVR server's v2.16.6 flicker (B-frames, missing DTS,
+  duplicate PTS). Tested against real x264 B-pyramid output in
+  `ingest/mpegts/testdata/x264_bframes.ts`.
 - A reconnect creates a new `*media.Stream`/`Bus` under the same key, so
   per-stream state must be keyed by pointer, not just by `StreamKey`.
+  HLS (TS container) carries the playlist over to the new source: the new
+  packager continues the media sequence and segment numbers from the
+  previous playlist (`hls.PlaylistRegistry.Previous`, kept 2 min after a
+  stream stops) and marks the switch `#EXT-X-DISCONTINUITY`, so players
+  following the stream ride through reconnects and pull fallback switches.
+  fMP4/CMAF and DASH still restart.
 - Auth is per application. RTMP puts the key in the stream name, SRT uses
   `app/stream?key`, WHIP uses `Authorization: Bearer <publish_key>`, and
   Icecast uses the Basic auth password. RTMP also supports Adobe auth
@@ -110,7 +155,14 @@ make urls          # prints example ingest/playback URLs
 - `hls.separate_audio_track` (separate audio and video playlists) can't be
   used with `hls.ll_hls.enabled`. If both are set, it's ignored with a
   warning.
-- Ingest codecs: H.264/HEVC video and AAC/MP3/MP2 audio.
+- Ingest codecs: H.264/HEVC video and AAC/MP3/MP2 audio. MP3 audio
+  (e.g. FMLE) reaches HLS with the `ts` container (stream_type 0x03,
+  CODECS `mp4a.40.34`) and MPEG-TS output only; DVR, DASH and fMP4/CMAF
+  HLS carry the video without it.
+- `H264Retimer` covers H.264 only. HEVC that arrives without DTS (and
+  WHIP, which also has only RTP timestamps but goes through pion) isn't
+  retimed yet. POC types 1 and field-coded pictures fall back to ordering
+  by source PTS, which gives a valid DTS but can't fix duplicate PTS.
 - ABR has two sources, both served at `/{app}/{group}/playlist.m3u8` by
   `api.abrMaster` (`internal/api/abr_master.go`):
   - Manual groups: panel ABR editor (`panel/src/app/abr`, modelled on the
@@ -130,7 +182,15 @@ make urls          # prints example ingest/playback URLs
   encoder hint, then the measured ingest rate +20%. RESOLUTION/CODECS come
   from CodecInfo, so players can tell the renditions apart. Manual groups
   are HLS only; DASH ABR exists only for `%i` groups.
+- DASH keeps its audio timeline on the source clock (`dash.Packager`
+  `tsOrigin`/`audioPos`: source audio gaps stretch the timeline, and audio
+  is cut at the video cut's DTS, not by arrival). HLS fMP4/CMAF still sums
+  nominal AAC frame durations (`fmp4AudioBaseDT`), so a source that drops
+  audio drifts A/V there over hours.
 - Legacy SHOUTcast v1 (no password) Icecast handshakes are not supported.
+- Failover backups are `rtmp` or `mp4` only. The panel lists rtsp/srt/hls
+  as "not supported yet" (rules with them never fail over). `mp4` backups
+  don't support fragmented MP4 or HEVC.
 - nDVR doesn't record HEVC (no `hvc1` sample entry in `mux`'s fMP4
   writer) or SCTE-35 markers (no `emsg`).
 - nDVR ABR rewind is HLS only. `/{app}/{group}/playlist_dvr*.m3u8` is a

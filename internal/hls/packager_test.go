@@ -2,12 +2,12 @@ package hls
 
 import (
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 )
 
@@ -142,8 +142,8 @@ func TestPackager_SplitAudioTrack_WritesIndependentOutputs(t *testing.T) {
 		filepath.Join(streamDir, "audio", "init.mp4"),
 		filepath.Join(streamDir, "audio", "seg000000.m4s"),
 	} {
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("expected file %s to exist: %v", path, err)
+		if !livestore.Default().Exists(path) {
+			t.Errorf("expected file %s in livestore", path)
 		}
 	}
 
@@ -233,17 +233,12 @@ func TestHandleAudioOnlyTS_IcecastMP3ProducesRealSegments(t *testing.T) {
 	}
 
 	streamDir := filepath.Join(baseDir, "hls", "test", "radio")
-	entries, err := os.ReadDir(streamDir)
-	if err != nil {
-		t.Fatalf("read stream dir: %v", err)
-	}
 	var segFiles []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".ts") {
-			segFiles = append(segFiles, e.Name())
-			info, err := e.Info()
-			if err != nil || info.Size() == 0 {
-				t.Errorf("segment %s is empty or unreadable: %v", e.Name(), err)
+	for _, name := range livestore.Default().List(streamDir) {
+		if strings.HasSuffix(name, ".ts") {
+			segFiles = append(segFiles, name)
+			if data, _ := livestore.Default().ReadFile(filepath.Join(streamDir, name)); len(data) == 0 {
+				t.Errorf("segment %s is empty", name)
 			}
 		}
 	}

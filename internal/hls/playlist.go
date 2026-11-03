@@ -3,11 +3,12 @@ package hls
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 )
 
 // Part is one LL-HLS partial segment within an in-progress or recently
@@ -87,6 +88,7 @@ type Playlist struct {
 	targetDur  int // EXT-X-TARGETDURATION
 	segments   []Segment
 	mediaSeq   int     // EXT-X-MEDIA-SEQUENCE
+	discSeq    int     // EXT-X-DISCONTINUITY-SEQUENCE: discontinuities slid out of the window
 	maxSeen    float64 // highest segment duration seen (for TARGETDURATION)
 	initSegURI string  // fMP4/CMAF only: emits #EXT-X-MAP when set
 
@@ -119,6 +121,48 @@ func NewPlaylist(outDir string, window, targetDurS int) *Playlist {
 		targetDur: targetDurS,
 		updateCh:  make(chan struct{}),
 	}
+}
+
+// ContinueFrom copies prev's live window into pl, so a new source on the
+// same stream key carries on the same playlist: the media sequence keeps
+// counting and the old segments stay listed until they slide out, instead
+// of the playlist restarting at 0 (which players following it treat as a
+// broken stream). It returns the segment number pl's packager should use
+// next. The caller marks its first segment IsDiscont.
+//
+// One number is skipped: prev's packager may still be finishing and write
+// one last segment after this copy, and it must not share a file name with
+// the new packager's first one.
+func (pl *Playlist) ContinueFrom(prev *Playlist) int {
+	prev.mu.RLock()
+	segs := append([]Segment(nil), prev.segments...)
+	mediaSeq, discSeq, maxSeen := prev.mediaSeq, prev.discSeq, prev.maxSeen
+	next := prev.mediaSeq + len(prev.segments)
+	if n := len(prev.segments); n > 0 && prev.segments[n-1].Seq+1 > next {
+		next = prev.segments[n-1].Seq + 1
+	}
+	prev.mu.RUnlock()
+
+	for i := range segs {
+		segs[i].Parts = nil
+	}
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	pl.segments, pl.mediaSeq, pl.discSeq, pl.maxSeen = segs, mediaSeq, discSeq, maxSeen
+	for len(pl.segments) > pl.window && pl.window > 0 {
+		pl.evictOldestLocked()
+	}
+	return next + 1
+}
+
+// evictOldestLocked drops the oldest segment, counting a discontinuity
+// that leaves the window (RFC 8216 6.2.1: EXT-X-DISCONTINUITY-SEQUENCE).
+func (pl *Playlist) evictOldestLocked() {
+	if pl.segments[0].IsDiscont {
+		pl.discSeq++
+	}
+	pl.segments = pl.segments[1:]
+	pl.mediaSeq++
 }
 
 // EnableParts turns on LL-HLS part rendering (#EXT-X-PART-INF,
@@ -189,8 +233,7 @@ func (pl *Playlist) AddSegment(seg Segment) {
 
 	// Evict oldest segments to maintain window size.
 	for len(pl.segments) > pl.window {
-		pl.segments = pl.segments[1:]
-		pl.mediaSeq++
+		pl.evictOldestLocked()
 	}
 
 	pl.notifyLocked()
@@ -278,6 +321,9 @@ func (pl *Playlist) render(skipDelta bool) string {
 	b.WriteString("#EXT-X-VERSION:7\n")
 	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDur)
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", pl.mediaSeq)
+	if pl.discSeq > 0 {
+		fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", pl.discSeq)
+	}
 	if pl.partsEnabled {
 		fmt.Fprintf(&b, "#EXT-X-PART-INF:PART-TARGET=%.3f\n", pl.partTargetS)
 		fmt.Fprintf(&b, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=%.3f,CAN-SKIP-UNTIL=%.3f\n",
@@ -409,13 +455,8 @@ func writePart(b *strings.Builder, part Part) {
 
 func (pl *Playlist) write() error {
 	content := pl.render(false)
-	tmpPath := filepath.Join(pl.outDir, ".index.m3u8.tmp")
-	finalPath := filepath.Join(pl.outDir, "index.m3u8")
-
-	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, finalPath)
+	livestore.Default().WriteFile(filepath.Join(pl.outDir, "index.m3u8"), []byte(content))
+	return nil
 }
 
 // ─── Master Playlist ──────────────────────────────────────────────────────────
@@ -460,10 +501,6 @@ func RenderMasterPlaylist(groupDir string, variants []Variant) string {
 // WriteMasterPlaylist writes master.m3u8 to groupDir.
 func WriteMasterPlaylist(groupDir string, variants []Variant) error {
 	content := RenderMasterPlaylist(groupDir, variants)
-	tmpPath := filepath.Join(groupDir, ".master.m3u8.tmp")
-	finalPath := filepath.Join(groupDir, "master.m3u8")
-	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, finalPath)
+	livestore.Default().WriteFile(filepath.Join(groupDir, "master.m3u8"), []byte(content))
+	return nil
 }

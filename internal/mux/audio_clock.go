@@ -49,6 +49,11 @@ func NewAudioClock(sampleRate, samplesPerFrame int) *AudioClock {
 	}
 }
 
+// Nominal is one frame's duration in 90 kHz ticks, rounded down.
+func (c *AudioClock) Nominal() uint32 {
+	return uint32(90000 * c.samplesPerFrame / c.sampleRate)
+}
+
 // NextDuration returns the Duration (90kHz ticks) to assign to the next
 // frame, whose incoming timestamp is pts (also 90kHz ticks). Call exactly
 // once per frame, in order.

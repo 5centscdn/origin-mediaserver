@@ -3,28 +3,24 @@ package dash
 import (
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 )
 
 func touchSegmentFiles(t *testing.T, dir string, seq int) {
 	t.Helper()
 	for _, name := range []string{"seg-video-", "seg-audio-"} {
-		path := filepath.Join(dir, fmt.Sprintf("%s%d.m4s", name, seq))
-		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
+		livestore.Default().WriteFile(filepath.Join(dir, fmt.Sprintf("%s%d.m4s", name, seq)), []byte("x"))
 	}
 }
 
 func segmentFilesExist(dir string, seq int) bool {
-	_, err1 := os.Stat(filepath.Join(dir, fmt.Sprintf("seg-video-%d.m4s", seq)))
-	_, err2 := os.Stat(filepath.Join(dir, fmt.Sprintf("seg-audio-%d.m4s", seq)))
-	return err1 == nil && err2 == nil
+	return livestore.Default().Exists(filepath.Join(dir, fmt.Sprintf("seg-video-%d.m4s", seq))) &&
+		livestore.Default().Exists(filepath.Join(dir, fmt.Sprintf("seg-audio-%d.m4s", seq)))
 }
 
 // TestCleanupOldSegment_RemovesOnlyExpiredPair verifies the DVR window

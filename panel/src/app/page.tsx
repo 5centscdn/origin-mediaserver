@@ -22,7 +22,7 @@ import {
   kickStream,
   Stream,
 } from '@/lib/api'
-import { formatBytes, formatUptime } from '@/lib/utils'
+import { formatBytes, formatUptime, listenPort } from '@/lib/utils'
 
 export default function DashboardPage() {
   return (
@@ -120,13 +120,13 @@ function DashboardContent() {
               Publish via RTMP:
             </div>
             <code className="inline-block mt-2 px-3 py-1.5 rounded bg-gray-800 text-gray-300 text-xs font-mono border border-gray-700">
-              rtmp://&lt;host&gt;{node?.rtmp_listen ?? ':1935'}/live/&lt;stream-key&gt;
+              rtmp://&lt;host&gt;{listenPort(node?.rtmp_listen, ':1935')}/live/&lt;stream-key&gt;
             </code>
             {node?.srt?.enabled && (
               <>
                 <div className="text-xs text-gray-500 mt-3">Or via SRT:</div>
                 <code className="inline-block mt-2 px-3 py-1.5 rounded bg-gray-800 text-gray-300 text-xs font-mono border border-gray-700">
-                  srt://&lt;host&gt;{node?.srt?.listen ?? ':4000'}?streamid=live/&lt;stream-key&gt;
+                  srt://&lt;host&gt;{listenPort(node?.srt?.listen, ':4000')}?streamid=live/&lt;stream-key&gt;
                 </code>
               </>
             )}

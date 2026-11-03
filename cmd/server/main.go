@@ -25,6 +25,7 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/failover"
 	"github.com/5centscdn/origin-mediaserver/internal/hls"
 	"github.com/5centscdn/origin-mediaserver/internal/icecast"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
 	"github.com/5centscdn/origin-mediaserver/internal/node"
@@ -84,6 +85,11 @@ func main() {
 
 	// ── Open embedded SQLite database ────────────────────────────────────────
 	// modernc.org/sqlite is a pure-Go SQLite port — no CGO, no external .so.
+	// Live HLS/DASH output is served from RAM; under memory pressure it
+	// moves to disk instead of risking an OOM kill (internal/livestore).
+	livestore.Default().StartMonitor(cfg.LiveCache.Mode, cfg.LiveCache.MemoryHighPct, cfg.LiveCache.MemoryLowPct,
+		time.Duration(cfg.LiveCache.CheckIntervalS)*time.Second)
+
 	database, err := dbpkg.Open(ctx, cfg.Server.DataDir)
 	if err != nil {
 		slog.Error("open database", "err", err)

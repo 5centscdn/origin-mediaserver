@@ -20,7 +20,8 @@ import (
 // range and timeshift requests carry through unchanged. The DVR engine records each variant as its own
 // stream; nothing is recorded under the group name.
 //
-// Variants come from, in order: a manual group (abr_groups), the live %i
+// Variants come from, in order: a manual group (abr_groups; a pattern track
+// such as test%i expands to the matching recorded or live streams), the live %i
 // group in the registry, or, once the encoder has gone away, the recorded
 // streams named {group}{N} (the %i naming FMLE uses, e.g. test1..test3 for
 // group test). The last is only tried when name has no recording of its own.
@@ -33,6 +34,9 @@ import (
 // variants merged into one MPD's adaptation set and isn't implemented.
 func (s *Server) abrDVRMaster(ctx context.Context, app, name, file string, req dvr.Request) (body string, ok, found bool) {
 	tracks, found := s.manualABRTracks(ctx, app, name)
+	if found {
+		tracks = s.expandPatternTracks(ctx, tracks, true)
+	}
 	if !found {
 		for _, st := range s.registry.GetABRGroup(app, name) {
 			tracks = append(tracks, abrTrack{

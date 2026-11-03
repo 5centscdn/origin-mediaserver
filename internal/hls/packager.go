@@ -7,12 +7,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
 	"github.com/5centscdn/origin-mediaserver/internal/mux"
@@ -36,12 +36,16 @@ type Packager struct {
 	audioPlaylist   *Playlist
 
 	// Segment building state
-	mu            sync.Mutex
-	segBuf        bytes.Buffer // current segment's TS data
-	segMuxer      *mux.TSMuxer
-	segStartDTS   int64
-	segStartWall  time.Time
-	segSeq        int
+	mu           sync.Mutex
+	segBuf       bytes.Buffer // current segment's TS data
+	segMuxer     *mux.TSMuxer
+	segStartDTS  int64
+	segStartWall time.Time
+	segSeq       int
+	// discontNext marks the next TS segment #EXT-X-DISCONTINUITY: the
+	// playlist was continued from a previous source (ContinueFrom), whose
+	// timestamps and codec parameters this one doesn't share.
+	discontNext   bool
 	keyframeCount int
 
 	// fMP4/CMAF state (used when cfg.HLS.Container is "fmp4" or "cmaf").
@@ -144,10 +148,12 @@ func (p *Packager) useSplitAudio() bool {
 // outDir is created automatically. registry may be nil (e.g. in tests) —
 // LL-HLS blocking reload just won't be able to find this stream's playlist.
 func NewPackager(cfg *config.Config, stream *media.Stream, baseDataDir string, registry *PlaylistRegistry) (*Packager, error) {
+	// Output lives in memory (internal/livestore), addressed by the path
+	// it used to have on disk. A segment must outlive every playlist that
+	// lists it, plus time for a slow player to fetch it.
 	outDir := filepath.Join(baseDataDir, "hls", stream.Key.App, stream.Key.Name)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return nil, fmt.Errorf("hls mkdir: %w", err)
-	}
+	segTTL := time.Duration(2*cfg.HLS.PlaylistWindow*max(cfg.HLS.SegmentDurationS, 1))*time.Second + 30*time.Second
+	livestore.Default().SetTTL(outDir, segTTL)
 
 	playlist := NewPlaylist(outDir, cfg.HLS.PlaylistWindow, cfg.HLS.SegmentDurationS)
 
@@ -174,10 +180,18 @@ func NewPackager(cfg *config.Config, stream *media.Stream, baseDataDir string, r
 		} else {
 			p.splitAudioTrack = true
 			p.audioOutDir = filepath.Join(outDir, "audio")
-			if err := os.MkdirAll(p.audioOutDir, 0o755); err != nil {
-				return nil, fmt.Errorf("hls audio mkdir: %w", err)
-			}
+			livestore.Default().SetTTL(p.audioOutDir, segTTL)
 			p.audioPlaylist = NewPlaylist(p.audioOutDir, cfg.HLS.PlaylistWindow, cfg.HLS.SegmentDurationS)
+		}
+	}
+
+	// Continue the previous source's playlist on this key (TS only: fMP4
+	// segments depend on an init segment the new source rewrites).
+	if registry != nil && !p.useFMP4() {
+		if prev := registry.Previous(stream.Key); prev != nil {
+			p.segSeq = playlist.ContinueFrom(prev)
+			p.discontNext = true
+			p.log.Info("HLS continuing previous playlist", "next_seq", p.segSeq)
 		}
 	}
 
@@ -229,8 +243,9 @@ func (p *Packager) Run(ctx context.Context) {
 	sub := p.stream.Bus.Subscribe(ctx)
 	defer sub.Close()
 	if p.plRegistry != nil {
-		defer p.plRegistry.Unregister(p.stream.Key)
+		defer p.plRegistry.Retire(p.stream.Key, p.playlist)
 	}
+	defer livestore.Default().Release(p.outDir)
 
 	p.log.Info("HLS packager started", "dir", p.outDir)
 
@@ -374,6 +389,18 @@ func (p *Packager) handleAudio(pkt *media.Packet) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// The muxer was built before any audio arrived (RTMP MP3 has no config
+	// record), so its PMT may name the wrong audio codec. Correct it from
+	// the packet. The open segment already carries the wrong PMT, and
+	// hls.js only reads the first PMT of a segment, so drop it and start
+	// clean at the next keyframe. This happens once, at stream start.
+	if p.segMuxer.SetAudioStreamType(mux.AudioStreamTypeFor(pkt.Codec.String())) {
+		p.log.Info("hls: audio codec differs from the muxer's, restarting segment", "codec", pkt.Codec)
+		p.segBuf.Reset()
+		p.segStartDTS = -1
+		return nil
+	}
 
 	return p.segMuxer.WriteAudio(audioData, pkt.PTS) // PTS already in 90 kHz ticks
 }
@@ -566,17 +593,18 @@ func (p *Packager) flushSegmentAt(nextDTS int64) error {
 
 	segName := fmt.Sprintf("seg%06d.ts", seq)
 	segPath := filepath.Join(p.outDir, segName)
-	if err := os.WriteFile(segPath, segData, 0o644); err != nil {
-		return fmt.Errorf("write segment %s: %w", segPath, err)
-	}
+	livestore.Default().WriteFile(segPath, segData)
 
 	markers := p.drainPendingMarkers()
 
+	discont := p.discontNext
+	p.discontNext = false
 	p.playlist.AddSegment(Segment{
 		Seq:         seq,
 		URI:         segName,
 		DurationS:   durationS,
 		WallTime:    startWall,
+		IsDiscont:   discont,
 		CueOut:      markers.cueOut,
 		CueOutCont:  markers.cueOutCont,
 		CueIn:       markers.cueIn,
@@ -742,9 +770,7 @@ func (p *Packager) closePart(nextDTS int64) error {
 
 	partName := fmt.Sprintf("seg%06d_part%03d.m4s", seq, partIdx)
 	partPath := filepath.Join(p.outDir, partName)
-	if err := os.WriteFile(partPath, data, 0o644); err != nil {
-		return fmt.Errorf("write part %s: %w", partPath, err)
-	}
+	livestore.Default().WriteFile(partPath, data)
 
 	p.playlist.AddPart(seq, Part{URI: partName, DurationS: partDurationS, Independent: partIdx == 0})
 	p.updatePreloadHint()
@@ -801,9 +827,7 @@ func (p *Packager) closeSegment(nextDTS int64) error {
 
 	segName := fmt.Sprintf("seg%06d.m4s", seq)
 	segPath := filepath.Join(p.outDir, segName)
-	if err := os.WriteFile(segPath, data, 0o644); err != nil {
-		return fmt.Errorf("write segment %s: %w", segPath, err)
-	}
+	livestore.Default().WriteFile(segPath, data)
 
 	p.playlist.AddSegment(Segment{
 		Seq:       seq,
@@ -900,9 +924,7 @@ func (p *Packager) closeSegmentSplit(nextDTS int64) error {
 			return fmt.Errorf("fmp4 mux video: %w", err)
 		}
 		segName := fmt.Sprintf("seg%06d.m4s", seq)
-		if err := os.WriteFile(filepath.Join(p.outDir, segName), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", segName, err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, segName), buf.Bytes())
 		for _, s := range videoSamples {
 			totalVideoDur += int64(s.Duration)
 		}
@@ -915,9 +937,7 @@ func (p *Packager) closeSegmentSplit(nextDTS int64) error {
 			return fmt.Errorf("fmp4 mux audio: %w", err)
 		}
 		segName := fmt.Sprintf("seg%06d.m4s", seq)
-		if err := os.WriteFile(filepath.Join(p.audioOutDir, segName), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write audio/%s: %w", segName, err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.audioOutDir, segName), buf.Bytes())
 		// Audio's own accumulated sample duration, not the video segment's
 		// durationS — audio frame boundaries don't line up exactly with
 		// video keyframe boundaries, so the two tracks' segments are
@@ -974,9 +994,7 @@ func (p *Packager) initFMP4MuxersSplit() error {
 		if err := p.fmp4Video.WriteInitSegment(&buf); err != nil {
 			return fmt.Errorf("write init.mp4: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(p.outDir, "init.mp4"), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write init.mp4: %w", err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, "init.mp4"), buf.Bytes())
 		p.playlist.SetInitSegment("init.mp4")
 	}
 
@@ -995,9 +1013,7 @@ func (p *Packager) initFMP4MuxersSplit() error {
 		if err := p.fmp4Audio.WriteInitSegment(&buf); err != nil {
 			return fmt.Errorf("write audio/init.mp4: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(p.audioOutDir, "init.mp4"), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write audio/init.mp4: %w", err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.audioOutDir, "init.mp4"), buf.Bytes())
 		p.audioPlaylist.SetInitSegment("init.mp4")
 	}
 
@@ -1056,9 +1072,7 @@ func (p *Packager) initFMP4Muxers() error {
 	if err := mux.NewFMP4Muxer(tracks...).WriteInitSegment(&buf); err != nil {
 		return fmt.Errorf("write init segment: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(p.outDir, "init.mp4"), buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write init.mp4: %w", err)
-	}
+	livestore.Default().WriteFile(filepath.Join(p.outDir, "init.mp4"), buf.Bytes())
 
 	p.playlist.SetInitSegment("init.mp4")
 	p.fmp4InitWritten = true
@@ -1074,4 +1088,3 @@ func aacConfigOf(ci *media.CodecInfo) []byte {
 	}
 	return ci.AACConfig
 }
-

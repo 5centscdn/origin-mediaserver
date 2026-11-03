@@ -4,10 +4,12 @@ package failover
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/ingest/mp4file"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
 	"github.com/5centscdn/origin-mediaserver/internal/rtmp"
@@ -347,7 +349,8 @@ func (m *streamMonitor) watchKeyframes(ctx context.Context) {
 
 // executeFailover attempts to fail over from primary to backup: it evicts a
 // stalled-but-still-registered primary (a no-op if the primary already
-// disappeared on its own), pulls the backup RTMP source, registers it at the
+// disappeared on its own), pulls the backup source (an RTMP pull, or an MP4
+// file looped in real time by internal/ingest/mp4file), registers it at the
 // primary's own StreamKey so existing playback URLs keep working, and starts
 // its HLS/DVR outputs via onBackupLive — the same path a normal RTMP publish
 // goes through.
@@ -360,8 +363,10 @@ func (m *streamMonitor) executeFailover(ctx context.Context, trigger string) boo
 		return false // already failed over / failing over
 	}
 
-	if m.rule.BackupProtocol != "rtmp" {
-		m.log.Error("failover backup pull not supported for protocol — only rtmp is implemented",
+	switch m.rule.BackupProtocol {
+	case "rtmp", "mp4":
+	default:
+		m.log.Error("failover backup protocol not supported (rtmp or mp4)",
 			"protocol", m.rule.BackupProtocol)
 		return false
 	}
@@ -397,8 +402,18 @@ func (m *streamMonitor) executeFailover(ctx context.Context, trigger string) boo
 	}
 
 	go func() {
-		if err := rtmp.Pull(backupCtx, m.rule.BackupURL, m.rule.PrimaryStream, backupStream.Bus); err != nil && backupCtx.Err() == nil {
-			m.log.Error("backup pull ended", "err", err)
+		var err error
+		switch m.rule.BackupProtocol {
+		case "mp4":
+			// A slate/filler file looped in real time; a remote file is
+			// downloaded once into the data dir and reused next time.
+			err = mp4file.Play(backupCtx, m.rule.BackupURL,
+				filepath.Join(m.cfg.Server.DataDir, "failover-cache"), backupStream.Bus, m.log)
+		default:
+			err = rtmp.Pull(backupCtx, m.rule.BackupURL, m.rule.PrimaryStream, backupStream.Bus)
+		}
+		if err != nil && backupCtx.Err() == nil {
+			m.log.Error("backup source ended", "protocol", m.rule.BackupProtocol, "err", err)
 		}
 	}()
 

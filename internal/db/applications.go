@@ -136,6 +136,50 @@ func (db *DB) GetStreamConfig(ctx context.Context, appID, streamName string) (*S
 	return best, nil
 }
 
+// GetABRPatternConfig returns the first enabled %i stream config in app that
+// streamName matches, or nil. FMLE ABR grouping is decided by the %i pattern
+// even when an exact config for the same name exists and wins in
+// GetStreamConfig: a panel user may create test1..test5 as streams (to pick
+// them in an ABR group before they go live) alongside "test%i", and that
+// mustn't pull them out of the automatic "test" group.
+func (db *DB) GetABRPatternConfig(ctx context.Context, appID, streamName string) (*StreamConfig, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, name_pattern FROM stream_configs
+		WHERE app_id = ? AND enabled = 1 AND is_wildcard = 1 AND name_pattern LIKE '%\%i%' ESCAPE '\'
+		ORDER BY created_at ASC`, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sc StreamConfig
+		if rows.Scan(&sc.ID, &sc.NamePattern) != nil {
+			continue
+		}
+		if matchStreamPattern(sc.NamePattern, streamName) {
+			sc.AppID, sc.IsWildcard, sc.Enabled = appID, true, true
+			return &sc, nil
+		}
+	}
+	return nil, rows.Err()
+}
+
+// MatchStreamPattern reports whether name matches a stream config pattern
+// ("*", "cam_*", "test%i", or an exact name). Exported for ABR pattern
+// tracks (api.expandPatternTracks).
+func MatchStreamPattern(pattern, name string) bool {
+	if !IsStreamPattern(pattern) {
+		return pattern == name
+	}
+	return matchStreamPattern(pattern, name)
+}
+
+// IsStreamPattern reports whether a stream name is a pattern rather than
+// one exact name.
+func IsStreamPattern(s string) bool {
+	return strings.Contains(s, "%i") || strings.Contains(s, "*")
+}
+
 // matchStreamPattern returns true if streamName matches pattern.
 // Supported wildcards:
 //   - *            → any name

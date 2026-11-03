@@ -510,6 +510,13 @@ func (c *conn) handlePublish(msid uint32, vals []AMF0Value) error {
 	if !isABR && dbStream != nil && dbStream.IsWildcard {
 		match, isABR = matchStreamConfigABR(dbStream.NamePattern, streamName)
 	}
+	if !isABR && dbStream != nil && !dbStream.IsWildcard && c.dbApp != nil {
+		// An exact config (e.g. test1 created on the Streams page) won the
+		// settings lookup; the %i pattern still decides the ABR group.
+		if pat, _ := c.db.GetABRPatternConfig(context.Background(), c.dbApp.ID, streamName); pat != nil {
+			match, isABR = matchStreamConfigABR(pat.NamePattern, streamName)
+		}
+	}
 	if isABR {
 		if match.Bandwidth == 0 {
 			match.Bandwidth = fmleTotalDatarate(rawName)

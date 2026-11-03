@@ -317,10 +317,30 @@ function RuleModal({
           <input
             required
             value={form.backup_url}
-            onChange={(e) => setForm({ ...form, backup_url: e.target.value })}
+            onChange={(e) => {
+              const url = e.target.value
+              // A .mp4/.mov URL is a file backup; pick the protocol for it.
+              const isFile = /\.(mp4|mov|m4v)(\?.*)?$/i.test(url.trim())
+              setForm({
+                ...form,
+                backup_url: url,
+                backup_protocol: isFile ? 'mp4' : form.backup_protocol === 'mp4' ? 'rtmp' : form.backup_protocol,
+              })
+            }}
             className={inputClass}
-            placeholder="rtmp://backup.example.com:1935/live/main"
+            placeholder={
+              form.backup_protocol === 'mp4'
+                ? 'https://cdn.example.com/slate.mp4 or /var/lib/origin-mediaserver/slate.mp4'
+                : 'rtmp://backup.example.com:1935/live/main'
+            }
           />
+          {form.backup_protocol === 'mp4' && (
+            <div className="mt-1 text-xs text-gray-500">
+              Plays the file in a loop at the primary&apos;s URLs while the primary is down. H.264 +
+              AAC MP4 (not fragmented); an http(s) file is downloaded once and cached on the
+              server, a path must be readable by the server.
+            </div>
+          )}
         </FormField>
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Backup protocol">
@@ -331,10 +351,19 @@ function RuleModal({
               }
               className={inputClass}
             >
-              <option value="rtmp">RTMP</option>
-              <option value="rtsp">RTSP</option>
-              <option value="srt">SRT</option>
-              <option value="hls">HLS</option>
+              <option value="rtmp">RTMP pull</option>
+              <option value="mp4">MP4 file (loop)</option>
+              {/* Not implemented by the failover manager yet; kept visible
+                  (and selectable for rules saved earlier) but disabled. */}
+              <option value="rtsp" disabled={form.backup_protocol !== 'rtsp'}>
+                RTSP (not supported yet)
+              </option>
+              <option value="srt" disabled={form.backup_protocol !== 'srt'}>
+                SRT (not supported yet)
+              </option>
+              <option value="hls" disabled={form.backup_protocol !== 'hls'}>
+                HLS (not supported yet)
+              </option>
             </select>
           </FormField>
           <FormField label="Trigger type">

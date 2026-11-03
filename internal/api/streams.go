@@ -13,8 +13,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/5centscdn/origin-mediaserver/internal/db"
 	"github.com/5centscdn/origin-mediaserver/internal/failover"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
+	"github.com/5centscdn/origin-mediaserver/internal/pull"
 	"github.com/5centscdn/origin-mediaserver/internal/streamoutputs"
 )
 
@@ -34,15 +37,15 @@ type streamResponse struct {
 
 func streamToResponse(s *media.Stream) streamResponse {
 	return streamResponse{
-		ID:          s.Key.String(),
-		App:         s.Key.App,
-		Name:        s.Key.Name,
-		SourceType:  s.SourceType,
-		SourceAddr:  s.SourceAddr,
-		ABRGroup:    s.ABRGroup,
-		StartedAt:   s.StartedAt,
-		UptimeS:     int64(time.Since(s.StartedAt).Seconds()),
-		BytesIn:     s.Bus.BytesIn(),
+		ID:         s.Key.String(),
+		App:        s.Key.App,
+		Name:       s.Key.Name,
+		SourceType: s.SourceType,
+		SourceAddr: s.SourceAddr,
+		ABRGroup:   s.ABRGroup,
+		StartedAt:  s.StartedAt,
+		UptimeS:    int64(time.Since(s.StartedAt).Seconds()),
+		BytesIn:    s.Bus.BytesIn(),
 		// Subscribers reflects real concurrent HLS/DASH viewers (see
 		// media.ViewerTracker), not Bus.SubscriberCount — that count also
 		// includes internal per-stream packet consumers (HLS packager, DVR
@@ -158,6 +161,9 @@ func (s *Server) handleStreamDVRInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 	all := s.registry.All()
 	resp := map[string]interface{}{
+		// Live HLS/DASH output: RAM, or disk under memory pressure, with a
+		// warning while on disk (internal/livestore).
+		"live_cache":   livestore.Default().Status(),
 		"node_name":    s.cfg.Server.NodeName,
 		"stream_count": len(all),
 		"abr_groups":   s.registry.AllABRGroups(),
@@ -636,7 +642,8 @@ func (s *Server) checkPublishable(ctx context.Context, app, stream string) error
 
 func (s *Server) handleListPullSources(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.QueryContext(r.Context(),
-		`SELECT id, app_name, stream_name, url, protocol, on_demand, reconnect, reconnect_delay_s, status, created_at, passphrase, pbkeylen
+		`SELECT id, app_name, stream_name, url, protocol, on_demand, reconnect, reconnect_delay_s, status, created_at, passphrase, pbkeylen,
+		        fallback_urls, primary_check_s
 		 FROM pull_sources ORDER BY created_at`)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -646,12 +653,17 @@ func (s *Server) handleListPullSources(w http.ResponseWriter, r *http.Request) {
 
 	var sources []map[string]interface{}
 	for rows.Next() {
-		var id, appName, streamName, url, protocol, status, createdAt, passphrase string
+		var id, appName, streamName, url, protocol, status, createdAt, passphrase, fallbacks string
 		var onDemand, reconnect bool
-		var reconnectDelayS, pbkeylen int
+		var reconnectDelayS, pbkeylen, primaryCheckS int
 		if err := rows.Scan(&id, &appName, &streamName, &url, &protocol,
-			&onDemand, &reconnect, &reconnectDelayS, &status, &createdAt, &passphrase, &pbkeylen); err != nil {
+			&onDemand, &reconnect, &reconnectDelayS, &status, &createdAt, &passphrase, &pbkeylen,
+			&fallbacks, &primaryCheckS); err != nil {
 			continue
+		}
+		fb := db.SplitFallbackURLs(fallbacks)
+		if fb == nil {
+			fb = []string{}
 		}
 		sources = append(sources, map[string]interface{}{
 			"id": id, "app_name": appName, "stream_name": streamName,
@@ -661,8 +673,13 @@ func (s *Server) handleListPullSources(w http.ResponseWriter, r *http.Request) {
 			// The passphrase itself is never echoed back — only whether one
 			// is set, so the panel can show "configured" without exposing
 			// the secret to anyone who can read the list.
-			"has_passphrase": passphrase != "",
-			"pbkeylen":       pbkeylen,
+			"has_passphrase":  passphrase != "",
+			"pbkeylen":        pbkeylen,
+			"fallback_urls":   fb,
+			"primary_check_s": primaryCheckS,
+			// active_url: which of url/fallback_urls is feeding the stream
+			// right now ("" when not running or reconnecting).
+			"active_url": s.pull.ActiveURL(id),
 		})
 	}
 
@@ -684,10 +701,23 @@ func (s *Server) handleCreatePullSource(w http.ResponseWriter, r *http.Request) 
 		ReconnectDelay int    `json:"reconnect_delay_s"`
 		Passphrase     string `json:"passphrase"`
 		PBKeylen       int    `json:"pbkeylen"`
+		// FallbackURLs are tried in order when url fails; PrimaryCheckS
+		// (default 30, 0 = never) is how often to try url again meanwhile.
+		FallbackURLs  []string `json:"fallback_urls"`
+		PrimaryCheckS *int     `json:"primary_check_s"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
+	}
+	req.FallbackURLs = db.SplitFallbackURLs(db.JoinFallbackURLs(req.FallbackURLs))
+	if err := pull.CheckFallbacks(req.Protocol, req.FallbackURLs); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	primaryCheck := 30
+	if req.PrimaryCheckS != nil {
+		primaryCheck = max(*req.PrimaryCheckS, 0)
 	}
 	if req.AppName == "" || req.StreamName == "" || req.URL == "" {
 		jsonError(w, http.StatusBadRequest, "app_name, stream_name, and url are required")
@@ -711,10 +741,11 @@ func (s *Server) handleCreatePullSource(w http.ResponseWriter, r *http.Request) 
 		req.ReconnectDelay = 5
 	}
 	_, err := s.db.ExecContext(r.Context(),
-		`INSERT INTO pull_sources (id, app_name, stream_name, url, protocol, on_demand, reconnect, reconnect_delay_s, passphrase, pbkeylen)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO pull_sources (id, app_name, stream_name, url, protocol, on_demand, reconnect, reconnect_delay_s, passphrase, pbkeylen, fallback_urls, primary_check_s)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, req.AppName, req.StreamName, req.URL, req.Protocol,
 		onDemandInt, reconnectInt, req.ReconnectDelay, req.Passphrase, req.PBKeylen,
+		db.JoinFallbackURLs(req.FallbackURLs), primaryCheck,
 	)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -732,6 +763,8 @@ func (s *Server) handleCreatePullSource(w http.ResponseWriter, r *http.Request) 
 		"reconnect": req.Reconnect, "reconnect_delay_s": req.ReconnectDelay,
 		"status": "inactive", "created_at": createdAt,
 		"has_passphrase": req.Passphrase != "", "pbkeylen": req.PBKeylen,
+		"fallback_urls": append([]string{}, req.FallbackURLs...), "primary_check_s": primaryCheck,
+		"active_url": "",
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -756,10 +789,25 @@ func (s *Server) handleUpdatePullSource(w http.ResponseWriter, r *http.Request) 
 		Passphrase      string `json:"passphrase"`
 		ClearPassphrase bool   `json:"clear_passphrase"`
 		PBKeylen        int    `json:"pbkeylen"`
+		// Left out (null) = keep what's stored, for clients that predate them.
+		FallbackURLs  *[]string `json:"fallback_urls"`
+		PrimaryCheckS *int      `json:"primary_check_s"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
+	}
+	var fallbacks, primaryCheck any // nil → COALESCE keeps the stored value
+	if req.FallbackURLs != nil {
+		fb := db.SplitFallbackURLs(db.JoinFallbackURLs(*req.FallbackURLs))
+		if err := pull.CheckFallbacks(req.Protocol, fb); err != nil {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		fallbacks = db.JoinFallbackURLs(fb)
+	}
+	if req.PrimaryCheckS != nil {
+		primaryCheck = max(*req.PrimaryCheckS, 0)
 	}
 	if req.Passphrase != "" && (len(req.Passphrase) < 10 || len(req.Passphrase) > 79) {
 		jsonError(w, http.StatusBadRequest, "passphrase must be 10-79 characters")
@@ -778,17 +826,19 @@ func (s *Server) handleUpdatePullSource(w http.ResponseWriter, r *http.Request) 
 	var err error
 	if req.Passphrase != "" || req.ClearPassphrase {
 		res, err = s.db.ExecContext(r.Context(),
-			`UPDATE pull_sources SET app_name=?, stream_name=?, url=?, protocol=?, on_demand=?, reconnect=?, reconnect_delay_s=?, passphrase=?, pbkeylen=?, updated_at=datetime('now')
+			`UPDATE pull_sources SET app_name=?, stream_name=?, url=?, protocol=?, on_demand=?, reconnect=?, reconnect_delay_s=?, passphrase=?, pbkeylen=?,
+			        fallback_urls=COALESCE(?, fallback_urls), primary_check_s=COALESCE(?, primary_check_s), updated_at=datetime('now')
 			 WHERE id=?`,
 			req.AppName, req.StreamName, req.URL, req.Protocol,
-			onDemandInt, reconnectInt, req.ReconnectDelay, req.Passphrase, req.PBKeylen, id,
+			onDemandInt, reconnectInt, req.ReconnectDelay, req.Passphrase, req.PBKeylen, fallbacks, primaryCheck, id,
 		)
 	} else {
 		res, err = s.db.ExecContext(r.Context(),
-			`UPDATE pull_sources SET app_name=?, stream_name=?, url=?, protocol=?, on_demand=?, reconnect=?, reconnect_delay_s=?, updated_at=datetime('now')
+			`UPDATE pull_sources SET app_name=?, stream_name=?, url=?, protocol=?, on_demand=?, reconnect=?, reconnect_delay_s=?,
+			        fallback_urls=COALESCE(?, fallback_urls), primary_check_s=COALESCE(?, primary_check_s), updated_at=datetime('now')
 			 WHERE id=?`,
 			req.AppName, req.StreamName, req.URL, req.Protocol,
-			onDemandInt, reconnectInt, req.ReconnectDelay, id,
+			onDemandInt, reconnectInt, req.ReconnectDelay, fallbacks, primaryCheck, id,
 		)
 	}
 	if err != nil {
@@ -1212,4 +1262,3 @@ func (s *Server) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-

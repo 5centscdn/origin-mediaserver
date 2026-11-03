@@ -2,7 +2,6 @@ package streamoutputs
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/db"
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
 	"github.com/5centscdn/origin-mediaserver/internal/hls"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
 )
@@ -81,8 +81,8 @@ func TestStartThenReload_PicksUpChangedDASHConfig(t *testing.T) {
 	}
 
 	dashDir := filepath.Join(dataDir, "dash", "srt", "test")
-	if _, err := os.Stat(dashDir); !os.IsNotExist(err) {
-		t.Fatalf("DASH output dir %s exists before out_dash was ever enabled (err=%v)", dashDir, err)
+	if livestore.Default().HasDir(dashDir) {
+		t.Fatalf("DASH output dir %s exists before out_dash was ever enabled", dashDir)
 	}
 
 	if _, err := database.ExecContext(ctx,
@@ -95,11 +95,11 @@ func TestStartThenReload_PicksUpChangedDASHConfig(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	// dash.NewPackager creates its output directory synchronously in its
+	// dash.NewPackager sets up its livestore directory synchronously in its
 	// constructor (before any packet ever arrives), so this doesn't need to
 	// wait for the packager's own goroutine to do any work.
-	if _, err := os.Stat(dashDir); err != nil {
-		t.Fatalf("DASH output dir %s missing after Reload with out_dash=1: %v", dashDir, err)
+	if !livestore.Default().HasDir(dashDir) {
+		t.Fatalf("DASH output dir %s missing after Reload with out_dash=1", dashDir)
 	}
 
 	if stream.LifetimeCtx().Err() != nil {

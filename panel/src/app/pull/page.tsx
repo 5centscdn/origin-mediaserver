@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
-import { Plus, Trash2, Pencil, Play, Square, Download, Lock } from 'lucide-react'
+import { Plus, Trash2, Pencil, Play, Square, Download, Lock, X } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
@@ -109,8 +109,23 @@ function PullContent() {
                     <td className="px-4 py-2.5 text-white font-medium">
                       {s.stream_name}
                     </td>
-                    <td className="px-4 py-2.5 text-gray-300 text-xs font-mono truncate max-w-[240px]">
-                      {s.url}
+                    <td className="px-4 py-2.5 text-xs font-mono max-w-[280px]">
+                      <div className="truncate text-gray-300" title={s.url}>
+                        {s.url}
+                      </div>
+                      {(s.fallback_urls?.length ?? 0) > 0 && (
+                        <div className="mt-0.5 flex items-center gap-1.5 font-sans">
+                          <span className="text-gray-500">
+                            +{s.fallback_urls!.length} fallback
+                            {s.fallback_urls!.length > 1 ? 's' : ''}
+                          </span>
+                          {isActive && s.active_url && s.active_url !== s.url && (
+                            <span title={s.active_url}>
+                              <Badge variant="yellow">on fallback</Badge>
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="inline-flex items-center gap-1.5">
@@ -237,6 +252,8 @@ function PullModal({
     reconnect_delay_s: 5,
     passphrase: '',
     pbkeylen: 0,
+    fallback_urls: [] as string[],
+    primary_check_s: 30,
   })
   const [clearPassphrase, setClearPassphrase] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -255,6 +272,8 @@ function PullModal({
         reconnect_delay_s: edit.reconnect_delay_s,
         passphrase: '',
         pbkeylen: edit.pbkeylen ?? 0,
+        fallback_urls: edit.fallback_urls ?? [],
+        primary_check_s: edit.primary_check_s ?? 30,
       })
     } else {
       setForm({
@@ -267,6 +286,8 @@ function PullModal({
         reconnect_delay_s: 5,
         passphrase: '',
         pbkeylen: 0,
+        fallback_urls: [],
+        primary_check_s: 30,
       })
     }
     setClearPassphrase(false)
@@ -277,11 +298,12 @@ function PullModal({
     e.preventDefault()
     setBusy(true)
     setErr(null)
+    const data = { ...form, fallback_urls: form.fallback_urls.map((u) => u.trim()).filter(Boolean) }
     try {
       if (edit) {
-        await updatePullSource(edit.id, { ...form, clear_passphrase: clearPassphrase })
+        await updatePullSource(edit.id, { ...data, clear_passphrase: clearPassphrase })
       } else {
-        await createPullSource(form)
+        await createPullSource(data)
       }
       onSaved()
     } catch (e: any) {
@@ -325,11 +347,69 @@ function PullModal({
           <input
             required
             value={form.url}
-            onChange={(e) => setForm({ ...form, url: e.target.value })}
+            onChange={(e) => {
+              const url = e.target.value
+              const proto = protocolForURL(url)
+              setForm({ ...form, url, protocol: proto ?? form.protocol })
+            }}
             className={inputClass}
             placeholder="rtsp://camera.example.com/stream"
           />
         </FormField>
+        <FormField label="Fallback URLs (optional)">
+          <div className="space-y-2">
+            {form.fallback_urls.map((u, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  value={u}
+                  onChange={(e) => {
+                    const next = [...form.fallback_urls]
+                    next[i] = e.target.value
+                    setForm({ ...form, fallback_urls: next })
+                  }}
+                  className={inputClass}
+                  placeholder="rtmp://backup.example.com/app/stream"
+                />
+                <button
+                  type="button"
+                  title="Remove"
+                  onClick={() =>
+                    setForm({ ...form, fallback_urls: form.fallback_urls.filter((_, j) => j !== i) })
+                  }
+                  className="px-2 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setForm({ ...form, fallback_urls: [...form.fallback_urls, ''] })}
+              className="text-xs text-blue-400 hover:text-blue-300"
+            >
+              + Add {form.fallback_urls.length ? 'another ' : ''}fallback URL
+            </button>
+            <p className="text-xs text-gray-500">
+              Tried in order when the primary fails or sends nothing for 10 s. Each URL&apos;s
+              protocol comes from its scheme (rtmp://, srt://, rtsp://, udp://, http://).
+            </p>
+          </div>
+        </FormField>
+        {form.fallback_urls.length > 0 && (
+          <FormField label="Primary check interval (s)">
+            <input
+              type="number"
+              min={0}
+              value={form.primary_check_s}
+              onChange={(e) => setForm({ ...form, primary_check_s: Number(e.target.value) })}
+              className={inputClass + ' max-w-[160px]'}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              While on a fallback, the primary is tried this often and the stream switches back
+              once it has been up for 3 s. 0 = stay on the fallback until it fails.
+            </p>
+          </FormField>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Protocol">
             <select
@@ -340,8 +420,9 @@ function PullModal({
               <option value="rtmp">RTMP</option>
               <option value="rtsp">RTSP</option>
               <option value="srt">SRT</option>
-              <option value="hls">HLS</option>
-              <option value="udp">UDP</option>
+              <option value="mpegts_http">MPEG-TS over HTTP</option>
+              <option value="mpegts_udp">MPEG-TS over UDP</option>
+              <option value="hls" disabled>HLS (not supported yet)</option>
             </select>
           </FormField>
           <FormField label="Reconnect delay (s)">
@@ -436,4 +517,22 @@ function PullModal({
       </form>
     </Modal>
   )
+}
+
+// protocolForURL picks the protocol from a URL's scheme, matching the
+// server's pull.ProtocolForURL; undefined when the scheme doesn't decide it.
+function protocolForURL(url: string): string | undefined {
+  const scheme = url.trim().toLowerCase().split('://')[0]
+  return (
+    {
+      rtmp: 'rtmp',
+      rtmps: 'rtmp',
+      rtsp: 'rtsp',
+      rtsps: 'rtsp',
+      srt: 'srt',
+      udp: 'mpegts_udp',
+      http: 'mpegts_http',
+      https: 'mpegts_http',
+    } as Record<string, string>
+  )[scheme]
 }

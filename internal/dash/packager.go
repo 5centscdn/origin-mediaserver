@@ -5,13 +5,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/captiondecode"
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/ebuttd"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/mux"
 	"github.com/5centscdn/origin-mediaserver/internal/teletext"
@@ -40,9 +41,20 @@ type Packager struct {
 	pendingVideo *mux.Sample // held back until the next packet's DTS completes its Duration
 	videoBaseDT  int64       // running total, 90kHz ticks, for tfdt
 	audioBaseDT  int64
-	segSeq       int
-	segStartDTS  int64
-	initWritten  bool
+	// tsOrigin is the source DTS that timeline position 0 stands for (the
+	// first segment's keyframe, set once haveOrigin). audioPos is where the next
+	// audio sample lands on the timeline. handleAudio compares the two with
+	// each frame's real DTS so a gap in the source's audio stretches the
+	// timeline instead of pulling every later audio segment earlier than
+	// the video segment with the same number: summing nominal frame
+	// durations alone drifted ~6 s in 100 min on a pull from the internet,
+	// and players stall on audio and video that far apart.
+	tsOrigin    int64
+	haveOrigin  bool
+	audioPos    int64
+	segSeq      int
+	segStartDTS int64
+	initWritten bool
 
 	// EBU-TT-D subtitle track (internal/captiondecode + internal/ebuttd),
 	// opt-in via cfg.DASH.DVB.SubtitlesEnabled. Piggybacks video/audio's own
@@ -93,10 +105,14 @@ type Packager struct {
 // NewPackager creates a DASH packager for the given stream. outDir is
 // created automatically.
 func NewPackager(cfg *config.Config, stream *media.Stream, baseDataDir string) (*Packager, error) {
+	// Output lives in memory (internal/livestore). Segments stay as long
+	// as the manifest's timeline lists them, plus time to fetch the last.
 	outDir := filepath.Join(baseDataDir, "dash", stream.Key.App, stream.Key.Name)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return nil, fmt.Errorf("dash mkdir: %w", err)
+	windowSegments := defaultManifestTimelineSegments
+	if cfg.DASH.DVRWindowS > 0 && cfg.DASH.SegmentDurationS > 0 {
+		windowSegments = cfg.DASH.DVRWindowS / cfg.DASH.SegmentDurationS
 	}
+	livestore.Default().SetTTL(outDir, time.Duration(windowSegments*max(cfg.DASH.SegmentDurationS, 1))*time.Second+30*time.Second)
 
 	p := &Packager{
 		cfg:    cfg,
@@ -127,6 +143,7 @@ func (p *Packager) SetDVBConfig(enabled, subtitlesEnabled bool) {
 func (p *Packager) Run(ctx context.Context) {
 	sub := p.stream.Bus.Subscribe(ctx)
 	defer sub.Close()
+	defer livestore.Default().Release(p.outDir)
 
 	p.log.Info("DASH packager started", "dir", p.outDir)
 
@@ -227,6 +244,13 @@ func (p *Packager) handleVideo(pkt *media.Packet) error {
 		}
 		if p.segStartDTS <= 0 {
 			p.segStartDTS = pkt.DTS
+			// Only once a segment is really open: a keyframe at DTS 0 (an
+			// RTMP pull's first frame) doesn't open one (<= 0 is "not
+			// open"), and an origin taken from it would put every audio
+			// frame a GOP late.
+			if !p.haveOrigin && p.segStartDTS > 0 {
+				p.tsOrigin, p.haveOrigin = pkt.DTS, true
+			}
 		}
 	}
 
@@ -338,6 +362,26 @@ func (p *Packager) handleAudio(pkt *media.Packet) error {
 	}
 	duration := p.audioClock.NextDuration(pkt.PTS)
 
+	// Keep the audio timeline on the source's clock (see tsOrigin).
+	nominal := int64(duration)
+	switch rel := pkt.DTS - p.tsOrigin; {
+	case rel-p.audioPos > nominal:
+		// Audio missing from the source: lengthen the previous frame, or
+		// start this segment later, by the gap.
+		gap := rel - p.audioPos
+		if n := len(p.audioSamples); n > 0 {
+			p.audioSamples[n-1].Duration += uint32(gap)
+		} else {
+			p.audioBaseDT += gap
+		}
+		p.audioPos = rel
+	case p.audioPos-rel > nominal && p.audioPos-rel < 5*90000:
+		// More audio than time (the source repeated or overlapped
+		// frames): drop this one rather than run ahead of the video.
+		return nil
+	}
+	p.audioPos += nominal
+
 	p.audioSamples = append(p.audioSamples, mux.Sample{
 		DTS:      pkt.DTS,
 		PTS:      pkt.PTS,
@@ -386,6 +430,32 @@ func (p *Packager) closeSegment(nextDTS int64) error {
 	audioSamples := p.audioSamples
 	p.videoSamples = nil
 	p.audioSamples = nil
+	// Cut audio at the video cut's timestamp, not at whatever has arrived
+	// by now: an RTMP source can send audio seconds ahead of the video it
+	// goes with (the kaumudy pull leads by ~2 s), and cutting by arrival
+	// would end every audio segment that much later than the video segment
+	// with the same number. Frames past the cut open the next segment.
+	// A source gap handleAudio folded into the last frame before the cut
+	// would make this segment's audio run past its video; that part of
+	// the gap moves to the start of the next segment instead (audioSkip).
+	var audioSkip int64
+	if nextDTS > 0 {
+		for i, s := range audioSamples {
+			if s.DTS >= nextDTS {
+				p.audioSamples = append([]mux.Sample(nil), audioSamples[i:]...)
+				audioSamples = audioSamples[:i]
+				if i > 0 && p.audioClock != nil {
+					last := &audioSamples[i-1]
+					keep := max(nextDTS-last.DTS, int64(p.audioClock.Nominal()))
+					if over := int64(last.Duration) - keep; over > 0 {
+						last.Duration -= uint32(over)
+						audioSkip = over
+					}
+				}
+				break
+			}
+		}
+	}
 
 	videoMuxer := p.fmp4Video
 	audioMuxer := p.fmp4Audio
@@ -432,9 +502,7 @@ func (p *Packager) closeSegment(nextDTS int64) error {
 			return fmt.Errorf("dash mux video: %w", err)
 		}
 		segName := fmt.Sprintf("seg-video-%d.m4s", seq)
-		if err := os.WriteFile(filepath.Join(p.outDir, segName), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", segName, err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, segName), buf.Bytes())
 		for _, s := range videoSamples {
 			totalVideoDur += int64(s.Duration)
 		}
@@ -446,9 +514,7 @@ func (p *Packager) closeSegment(nextDTS int64) error {
 			return fmt.Errorf("dash mux audio: %w", err)
 		}
 		segName := fmt.Sprintf("seg-audio-%d.m4s", seq)
-		if err := os.WriteFile(filepath.Join(p.outDir, segName), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", segName, err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, segName), buf.Bytes())
 		for _, s := range audioSamples {
 			totalAudioDur += int64(s.Duration)
 		}
@@ -476,9 +542,7 @@ func (p *Packager) closeSegment(nextDTS int64) error {
 			return fmt.Errorf("dash mux text: %w", err)
 		}
 		segName := fmt.Sprintf("seg-text-%d.m4s", seq)
-		if err := os.WriteFile(filepath.Join(p.outDir, segName), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", segName, err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, segName), buf.Bytes())
 		totalTextDur = durTicks
 	}
 
@@ -493,7 +557,7 @@ func (p *Packager) closeSegment(nextDTS int64) error {
 		p.textTimeline = append(p.textTimeline, SegmentTimelineEntry{Number: seq, StartTicks: textBaseDT, DurationTicks: totalTextDur})
 	}
 	p.videoBaseDT += totalVideoDur
-	p.audioBaseDT += totalAudioDur
+	p.audioBaseDT += totalAudioDur + audioSkip
 	p.textBaseDT += totalTextDur
 
 	// The manifest only needs enough recent history for a client to anchor
@@ -567,10 +631,7 @@ func (p *Packager) cleanupOldSegment(latestSeq int) {
 		fmt.Sprintf("seg-audio-%d.m4s", expireSeq),
 		fmt.Sprintf("seg-text-%d.m4s", expireSeq), // no-op (os.IsNotExist below) when subtitles aren't enabled
 	} {
-		path := filepath.Join(p.outDir, segName)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			p.log.Warn("dash dvr cleanup", "file", segName, "err", err)
-		}
+		livestore.Default().Remove(filepath.Join(p.outDir, segName))
 	}
 }
 
@@ -629,9 +690,7 @@ func (p *Packager) ensureInit() error {
 		if err := p.fmp4Video.WriteInitSegment(&buf); err != nil {
 			return fmt.Errorf("write init-video.mp4: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(p.outDir, "init-video.mp4"), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write init-video.mp4: %w", err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, "init-video.mp4"), buf.Bytes())
 	}
 
 	if hasAudio {
@@ -653,9 +712,7 @@ func (p *Packager) ensureInit() error {
 		if err := p.fmp4Audio.WriteInitSegment(&buf); err != nil {
 			return fmt.Errorf("write init-audio.mp4: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(p.outDir, "init-audio.mp4"), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write init-audio.mp4: %w", err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, "init-audio.mp4"), buf.Bytes())
 	}
 
 	hasText := p.textExtractor != nil
@@ -681,9 +738,7 @@ func (p *Packager) ensureInit() error {
 		if err := p.fmp4Text.WriteInitSegment(&buf); err != nil {
 			return fmt.Errorf("write init-text.mp4: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(p.outDir, "init-text.mp4"), buf.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write init-text.mp4: %w", err)
-		}
+		livestore.Default().WriteFile(filepath.Join(p.outDir, "init-text.mp4"), buf.Bytes())
 	}
 
 	params := ManifestParams{

@@ -436,6 +436,13 @@ export interface PullSource {
   passphrase?: string
   clear_passphrase?: boolean
   pbkeylen?: number
+  // Backup URLs tried in order when url fails (protocol from each URL's
+  // scheme). While on one, url is retried every primary_check_s seconds
+  // and the stream switches back once it's up (0 = never switch back).
+  fallback_urls?: string[]
+  primary_check_s?: number
+  // Which URL is feeding the stream now ("" when not running).
+  active_url?: string
 }
 
 export async function listPullSources(): Promise<PullSource[]> {
@@ -551,6 +558,19 @@ export async function deleteToken(userId: string, tid: string): Promise<void> {
 export interface NodeInfo {
   node_name: string
   stream_count: number
+  live_cache?: {
+    policy: 'hybrid' | 'memory' | 'disk'
+    mode: 'memory' | 'disk'
+    memory_used_pct: number
+    memory_high_pct: number
+    memory_low_pct: number
+    since?: string
+    files: number
+    bytes: number
+    disk_files: number
+    disk_bytes: number
+    warning?: string
+  }
   version: string
   data_dir?: string
   rtmp_listen?: string

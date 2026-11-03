@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -371,6 +372,17 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 	}
 	if req.NamePattern == "" {
 		jsonError(w, http.StatusBadRequest, "name_pattern is required")
+		return
+	}
+
+	// One config per name: the Streams page creates several at once, and a
+	// duplicate would make which one applies depend on creation order.
+	var dup int
+	s.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM stream_configs WHERE app_id = ? AND name_pattern = ?`,
+		appID, req.NamePattern).Scan(&dup)
+	if dup > 0 {
+		jsonError(w, http.StatusConflict, fmt.Sprintf("stream %q already exists in this application", req.NamePattern))
 		return
 	}
 

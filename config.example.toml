@@ -237,6 +237,11 @@ watchdog_interval_ms = 1000
 stall_timeout_ms     = 5000
 # Pre-buffer from backup before switching (smooths transition)
 warmup_buffer_ms     = 2000
+# Failover rules themselves are managed in the panel/API (Failover page).
+# A rule's backup is an RTMP pull (backup_protocol "rtmp") or an MP4 file
+# looped at the primary's URLs (backup_protocol "mp4": H.264 + AAC,
+# non-fragmented; a local path, or an http(s) URL downloaded once into
+# <data_dir>/failover-cache).
 
 # ─────────────────────────────────────────────────────────────
 # WebRTC — WHIP ingest (POST /whip/{app}/{stream}) and WHEP sub-second-
@@ -264,6 +269,25 @@ refresh_expiry_days = 7
 [auth.bootstrap_admin]
 email    = "admin@localhost"
 password = "admin"
+
+# ─────────────────────────────────────────────────────────────
+# Live cache
+# ─────────────────────────────────────────────────────────────
+# Where live HLS/DASH output (playlists, segments, parts) is kept; nDVR is
+# always on disk.
+#   hybrid  RAM, but if memory use reaches memory_high_pct live output moves
+#           to disk under data_dir (hls/, dash/) to avoid an OOM kill, and
+#           the panel and GET /api/v1/node show a warning. It moves back to
+#           RAM once memory falls below memory_low_pct.
+#   memory  always RAM. At memory_high_pct you only get the warning.
+#   disk    always disk (page cache still keeps hot segments in RAM).
+# Memory use is the higher of the system's and this service's cgroup limit
+# (if set), not counting reclaimable page cache.
+[live_cache]
+mode             = "hybrid"
+memory_high_pct  = 90
+memory_low_pct   = 80
+check_interval_s = 5
 
 # ─────────────────────────────────────────────────────────────
 # Metrics

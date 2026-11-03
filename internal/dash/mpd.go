@@ -6,10 +6,11 @@ package dash
 import (
 	"encoding/xml"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 )
 
 // Fixed bandwidth estimates. No per-stream bitrate measurement exists
@@ -551,23 +552,14 @@ func RenderGroupMPD(p GroupManifestParams) ([]byte, error) {
 	return out, nil
 }
 
-// WriteMPD renders and atomically publishes manifest.mpd into outDir, using
-// the same write-tmp-then-rename pattern as internal/hls/playlist.go's
-// write() — readers never see a partial file.
+// WriteMPD renders and publishes manifest.mpd into outDir in the live
+// store (internal/livestore); readers never see a partial manifest.
 func WriteMPD(outDir string, p ManifestParams) error {
 	data, err := RenderMPD(p)
 	if err != nil {
 		return err
 	}
 
-	tmpPath := filepath.Join(outDir, ".manifest.mpd.tmp")
-	finalPath := filepath.Join(outDir, "manifest.mpd")
-
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return fmt.Errorf("write mpd tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return fmt.Errorf("rename mpd: %w", err)
-	}
+	livestore.Default().WriteFile(filepath.Join(outDir, "manifest.mpd"), data)
 	return nil
 }

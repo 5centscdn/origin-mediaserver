@@ -96,3 +96,28 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false
   }
 }
+
+// isStreamPattern / matchesStreamPattern mirror the server's stream config
+// patterns (internal/db.MatchStreamPattern): "*" globs and FMLE "%i" (one or
+// more digits); anything else is an exact name.
+export function isStreamPattern(name: string): boolean {
+  return name.includes('%i') || name.includes('*')
+}
+
+export function matchesStreamPattern(pattern: string, name: string): boolean {
+  if (!isStreamPattern(pattern)) return pattern === name
+  const re = pattern
+    .split(/(\*|%i)/)
+    .map((p) => (p === '*' ? '.*' : p === '%i' ? '[0-9]+' : p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')))
+    .join('')
+  return new RegExp('^' + re + '$').test(name)
+}
+
+// listenPort turns a listen address ("0.0.0.0:1935", ":4000") into the
+// ":port" part shown after <host> in publish URLs; the bind address isn't
+// what an encoder connects to.
+export function listenPort(listen: string | undefined, fallback: string): string {
+  if (!listen) return fallback
+  const i = listen.lastIndexOf(':')
+  return i >= 0 ? listen.slice(i) : fallback
+}

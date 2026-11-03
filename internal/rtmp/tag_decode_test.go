@@ -100,22 +100,42 @@ func TestDecodeAudioTag_NoExistingCodecInfoCreatesFresh(t *testing.T) {
 	}
 }
 
-func TestDecodeVideoTag_SequenceHeaderReplacesRatherThanMerges(t *testing.T) {
-	// audio-then-video: this is a pre-existing (unchanged) asymmetry, not a
-	// regression — a video sequence header always installs a fresh
-	// video-only CodecInfo, same as before this refactor. Documented here
-	// so a future change to this behavior is a deliberate decision.
+func TestDecodeVideoTag_SequenceHeaderKeepsAudio(t *testing.T) {
+	// audio-then-video: the video sequence header must keep the audio
+	// fields already known, or outputs built right after it see no audio.
 	_, audioCI := decodeAudioTag("cam1", nil, audioConfigTag([]byte{0x12, 0x10}))
 	if audioCI == nil {
 		t.Fatal("setup: expected audio CodecInfo")
 	}
-
 	_, videoCI := decodeVideoTag("cam1", audioCI, videoConfigTag(0x64, 0x1F))
 	if videoCI == nil {
 		t.Fatal("expected non-nil video CodecInfo")
 	}
-	if videoCI.AudioCodec == media.CodecAAC {
-		t.Error("video sequence header unexpectedly preserved prior audio info — behavior changed, update this test and the doc comment on decodeVideoTag")
+	if videoCI.AudioCodec != media.CodecAAC || string(videoCI.AACConfig) != "\x12\x10" || videoCI.VideoCodec != media.CodecH264 {
+		t.Errorf("video sequence header lost audio info: %+v", videoCI)
+	}
+}
+
+// FMLE's default audio is MP3 (sound_format 2), which has no config record.
+// The frames themselves must set CodecInfo, or outputs declare it as AAC.
+func TestDecodeAudioTag_MP3SetsCodecInfo(t *testing.T) {
+	_, videoCI := decodeVideoTag("cam1", nil, videoConfigTag(0x4D, 0x1F))
+	// 0x2F: MP3, 44 kHz, 16-bit, stereo. Frame header FF FB 90 64: MPEG-1
+	// Layer III, 128 kbps, 44.1 kHz, joint stereo.
+	tag := &Message{TypeID: msgAudio, Data: []byte{0x2F, 0xFF, 0xFB, 0x90, 0x64, 0, 0}}
+	pkt, ci := decodeAudioTag("cam1", videoCI, tag)
+	if pkt == nil || pkt.Codec != media.CodecMP3 {
+		t.Fatalf("packet %+v", pkt)
+	}
+	if ci == nil || ci.AudioCodec != media.CodecMP3 || ci.SampleRate != 44100 || ci.Channels != 2 || ci.VideoCodec != media.CodecH264 {
+		t.Fatalf("CodecInfo %+v", ci)
+	}
+	if got := media.AudioCodecString(ci); got != "mp4a.40.34" {
+		t.Errorf("codec string %q", got)
+	}
+	// Once set, later frames don't rebuild it.
+	if _, again := decodeAudioTag("cam1", ci, tag); again != nil {
+		t.Error("CodecInfo rebuilt on every MP3 frame")
 	}
 }
 

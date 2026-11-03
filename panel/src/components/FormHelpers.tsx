@@ -37,7 +37,9 @@ export function ModalActions({
   submitLabel: string
 }) {
   return (
-    <div className="flex justify-end gap-2 pt-3 border-t border-gray-800">
+    // Sticky inside Modal's scrolling body, so Save stays reachable on long
+    // forms; the negative margins let its background cover the body padding.
+    <div className="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-gray-800 bg-gray-900 px-5 pb-5 pt-3">
       <button
         type="button"
         onClick={onCancel}

@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/5centscdn/origin-mediaserver/internal/db"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 )
 
@@ -37,6 +40,9 @@ type abrTrack struct {
 // same, after the same incidents).
 func (s *Server) abrMaster(ctx context.Context, app, name string) (body string, ok, found bool) {
 	tracks, found := s.manualABRTracks(ctx, app, name)
+	if found {
+		tracks = s.expandPatternTracks(ctx, tracks, false)
+	}
 	if !found {
 		for _, st := range s.registry.GetABRGroup(app, name) {
 			tracks = append(tracks, abrTrack{
@@ -93,6 +99,129 @@ func (s *Server) manualABRTracks(ctx context.Context, app, name string) ([]abrTr
 		tracks = append(tracks, t)
 	}
 	return tracks, len(tracks) > 0
+}
+
+// expandPatternTracks replaces each track whose stream is a pattern
+// ("test%i", "cam_*") with one track per matching stream, so a manual group
+// can say "every FMLE rendition" instead of listing test1, test2, test3:
+// renditions added or removed in the encoder show up without editing the
+// group. Matches are the live streams, plus, when withRecorded is set (the
+// rewind master), streams with nDVR recordings, which outlive the encoder.
+//
+// Bandwidth and resolution set on a pattern track would be wrong for all
+// but one rendition, so expanded tracks take those from each stream (auto);
+// codecs, frame rate and audio-only carry over. A stream already listed by
+// name earlier in the group isn't added twice. Matches are ordered by their
+// number (test2 before test10).
+func (s *Server) expandPatternTracks(ctx context.Context, tracks []abrTrack, withRecorded bool) []abrTrack {
+	var out []abrTrack
+	seen := map[string]bool{}
+	add := func(t abrTrack) {
+		if k := t.app + "/" + t.stream; !seen[k] {
+			seen[k] = true
+			out = append(out, t)
+		}
+	}
+	for _, t := range tracks {
+		if !db.IsStreamPattern(t.stream) {
+			add(t)
+		}
+	}
+	for _, t := range tracks {
+		if !db.IsStreamPattern(t.stream) {
+			continue
+		}
+		names := map[string]bool{}
+		for _, st := range s.registry.All() {
+			if st.Key.App == t.app && db.MatchStreamPattern(t.stream, st.Key.Name) {
+				names[st.Key.Name] = true
+			}
+		}
+		if withRecorded {
+			for _, n := range s.recordedStreams(ctx, t.app) {
+				if db.MatchStreamPattern(t.stream, n) {
+					names[n] = true
+				}
+			}
+		}
+		sorted := make([]string, 0, len(names))
+		for n := range names {
+			sorted = append(sorted, n)
+		}
+		sort.Slice(sorted, func(i, j int) bool { return naturalLess(sorted[i], sorted[j]) })
+		for _, n := range sorted {
+			e := t
+			e.stream, e.label = n, n
+			e.bandwidth, e.avgBandwidth, e.width, e.height = 0, 0, 0, 0
+			add(e)
+		}
+	}
+	// Keep the group's own order: named tracks where they were, pattern
+	// matches in place of their pattern.
+	// A named track that the pattern also matches keeps its own settings
+	// but is placed among the pattern's matches, in number order.
+	var ordered []abrTrack
+	placed := map[string]bool{}
+	for _, t := range tracks {
+		var group []abrTrack
+		for _, o := range out {
+			k := o.app + "/" + o.stream
+			if placed[k] || o.app != t.app || !db.MatchStreamPattern(t.stream, o.stream) {
+				continue
+			}
+			placed[k] = true
+			group = append(group, o)
+		}
+		sort.SliceStable(group, func(i, j int) bool { return naturalLess(group[i].stream, group[j].stream) })
+		ordered = append(ordered, group...)
+	}
+	return ordered
+}
+
+// recordedStreams lists app's streams that have nDVR sessions.
+func (s *Server) recordedStreams(ctx context.Context, app string) []string {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT stream_name FROM dvr_sessions WHERE app_name = ?`, app)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if rows.Scan(&n) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// naturalLess orders names with numbers by value: test2 < test10.
+func naturalLess(a, b string) bool {
+	for a != "" && b != "" {
+		ai, bi := digitRun(a), digitRun(b)
+		if ai > 0 && bi > 0 {
+			na, _ := strconv.Atoi(a[:ai])
+			nb, _ := strconv.Atoi(b[:bi])
+			if na != nb {
+				return na < nb
+			}
+			a, b = a[ai:], b[bi:]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+func digitRun(s string) int {
+	n := 0
+	for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+		n++
+	}
+	return n
 }
 
 // streamInf renders t's EXT-X-STREAM-INF attributes, filling every "auto"

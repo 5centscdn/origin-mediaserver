@@ -2,13 +2,13 @@ package dash
 
 import (
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/5centscdn/origin-mediaserver/internal/captiondecode"
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 )
 
@@ -104,8 +104,8 @@ func runCaptionSequence(t *testing.T, dvbProfile bool) string {
 	}
 
 	initPath := filepath.Join(dir, "init-text.mp4")
-	if _, err := os.Stat(initPath); err != nil {
-		t.Errorf("expected init-text.mp4 to exist: %v", err)
+	if !livestore.Default().Exists(initPath) {
+		t.Errorf("expected init-text.mp4 to exist")
 	}
 
 	return dir
@@ -116,9 +116,9 @@ func runCaptionSequence(t *testing.T, dvbProfile bool) string {
 func TestPackager_TextTrack_EndToEnd_DVBProfile(t *testing.T) {
 	dir := runCaptionSequence(t, true)
 
-	data, err := os.ReadFile(filepath.Join(dir, "seg-text-1.m4s"))
-	if err != nil {
-		t.Fatalf("expected seg-text-1.m4s to exist: %v", err)
+	data, ok := livestore.Default().ReadFile(filepath.Join(dir, "seg-text-1.m4s"))
+	if !ok {
+		t.Fatal("expected seg-text-1.m4s to exist")
 	}
 	s := string(data)
 	for _, want := range []string{"<tt", "HI", "</tt>"} {
@@ -136,9 +136,9 @@ func TestPackager_TextTrack_EndToEnd_DVBProfile(t *testing.T) {
 func TestPackager_TextTrack_EndToEnd_NonDVBUsesWebVTT(t *testing.T) {
 	dir := runCaptionSequence(t, false)
 
-	data, err := os.ReadFile(filepath.Join(dir, "seg-text-1.m4s"))
-	if err != nil {
-		t.Fatalf("expected seg-text-1.m4s to exist: %v", err)
+	data, ok := livestore.Default().ReadFile(filepath.Join(dir, "seg-text-1.m4s"))
+	if !ok {
+		t.Fatal("expected seg-text-1.m4s to exist")
 	}
 	s := string(data)
 	for _, want := range []string{"vttc", "payl", "HI"} {

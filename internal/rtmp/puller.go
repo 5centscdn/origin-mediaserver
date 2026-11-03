@@ -82,7 +82,7 @@ func Pull(ctx context.Context, rawURL, streamName string, bus *media.Bus) error 
 		return err
 	}
 
-	log.Info("backup RTMP pull connected", "app", appName, "stream", playName)
+	log.Info("RTMP pull connected", "app", appName, "stream", playName)
 
 	for {
 		if ctx.Err() != nil {

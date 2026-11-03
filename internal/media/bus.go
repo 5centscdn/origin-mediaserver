@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Bus is an in-process pub/sub channel for a single logical stream.
@@ -28,6 +29,11 @@ type Bus struct {
 	// rtsp.Pull, mpegts.PullHTTP/ListenUDP, srt.Pull) alike — already holds
 	// a *Bus, mirroring why CodecInfo lives here too.
 	bytesIn atomic.Int64
+
+	// lastMedia is when the last audio/video packet was published (unix
+	// nanoseconds, 0 = never). The pull manager's fallback watchdog uses it
+	// to tell a live upstream from one that connected but sends nothing.
+	lastMedia atomic.Int64
 
 	// Codec information extracted from the sequence header. Guarded by mu
 	// (last-write-wins) rather than a sync.Once — failover can rebind a
@@ -89,6 +95,9 @@ func (b *Bus) Publish(pkt *Packet) {
 	if b.closed.Load() {
 		return
 	}
+	if pkt.Codec.IsVideo() || pkt.Codec.IsAudio() {
+		b.lastMedia.Store(time.Now().UnixNano())
+	}
 
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -100,6 +109,15 @@ func (b *Bus) Publish(pkt *Packet) {
 			// Subscriber is too slow; drop this packet for it.
 		}
 	}
+}
+
+// LastMediaAt returns when the last audio/video packet was published, or
+// the zero time if none has been.
+func (b *Bus) LastMediaAt() time.Time {
+	if n := b.lastMedia.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
 }
 
 // AddBytesIn atomically adds n to the running ingest byte counter.

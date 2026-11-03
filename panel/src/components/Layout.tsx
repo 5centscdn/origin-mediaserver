@@ -14,8 +14,11 @@ import {
   Settings,
   LogOut,
   AppWindow,
+  ListVideo,
 } from 'lucide-react'
 import clsx from 'clsx'
+import useSWR from 'swr'
+import { AlertTriangle } from 'lucide-react'
 import {
   restoreAuth,
   getToken,
@@ -23,6 +26,7 @@ import {
   getActiveServer,
   setActiveServer,
   ServerEntry,
+  getNodeInfo,
 } from '@/lib/api'
 
 interface NavItem {
@@ -34,6 +38,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { href: '/applications', label: 'Applications', icon: <AppWindow size={18} /> },
+  { href: '/stream-configs', label: 'Streams', icon: <ListVideo size={18} /> },
   { href: '/streams', label: 'Live Streams', icon: <Radio size={18} /> },
   { href: '/abr', label: 'ABR Groups', icon: <Layers size={18} /> },
   { href: '/dvr', label: 'DVR', icon: <HardDrive size={18} /> },
@@ -161,7 +166,25 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      <main className="flex-1 overflow-y-auto p-6">
+        <LiveCacheBanner />
+        {children}
+      </main>
+    </div>
+  )
+}
+
+// LiveCacheBanner warns on every page while memory is short: live
+// HLS/DASH output has moved from RAM to disk (hybrid mode), or can't
+// (memory mode). See internal/livestore.
+function LiveCacheBanner() {
+  const { data: node } = useSWR('node', getNodeInfo, { refreshInterval: 15000 })
+  const lc = node?.live_cache
+  if (!lc?.warning) return null
+  return (
+    <div className="mb-4 flex items-start gap-2 rounded-lg border border-yellow-700 bg-yellow-900/30 px-4 py-3 text-sm text-yellow-200">
+      <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+      <span>{lc.warning}</span>
     </div>
   )
 }

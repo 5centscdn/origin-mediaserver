@@ -122,6 +122,10 @@ func Serve(ctx context.Context, w http.ResponseWriter, stream *media.Stream, sct
 				if pkt.Codec == media.CodecAAC {
 					audioData = mux.WrapADTS(pkt.Data, stream.Bus.CodecInfo().AACConfig)
 				}
+				// RTMP MP3 has no config record, so the muxer may have been
+				// built naming AAC (see mux.TSMuxer.SetAudioStreamType). A
+				// continuous stream re-sends PAT/PMT at the next keyframe.
+				muxer.SetAudioStreamType(mux.AudioStreamTypeFor(pkt.Codec.String()))
 				if err := muxer.WriteAudio(audioData, pkt.PTS); err != nil {
 					return fmt.Errorf("tsout: write audio: %w", err)
 				}

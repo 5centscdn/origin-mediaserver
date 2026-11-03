@@ -73,6 +73,7 @@ func decodeVideoTag(streamName string, currentCI *media.CodecInfo, msg *Message)
 			pkt.Type = media.PacketConfig
 			pkt.Data = payload
 			if ci := parseHEVCDecoderConfig(payload); ci != nil {
+				keepAudio(ci, currentCI)
 				newCI = ci
 			}
 		case 1: // PacketTypeCodedFrames: 3-byte composition time, then AVCC-style NALUs
@@ -117,6 +118,7 @@ func decodeVideoTag(streamName string, currentCI *media.CodecInfo, msg *Message)
 					pkt.Type = media.PacketConfig
 					pkt.Data = msg.Data[5:]
 					if ci := parseAVCDecoderConfig(pkt.Data); ci != nil {
+						keepAudio(ci, currentCI)
 						newCI = ci
 					}
 				case 1: // NALU(s)
@@ -197,6 +199,22 @@ func decodeAudioTag(streamName string, currentCI *media.CodecInfo, msg *Message)
 		pkt.Codec = media.CodecMP3
 		pkt.Type = media.PacketMedia
 		pkt.Data = msg.Data[1:]
+		// MP3 has no config record, so CodecInfo is set from the frames
+		// themselves. Without it outputs assumed AAC: FMLE's default MP3
+		// audio was declared AAC in the HLS PMT and CODECS, and hls.js
+		// failed with fragParsingError. Checked on every frame, so it also
+		// recovers after a video sequence header replaces CodecInfo.
+		if currentCI == nil || currentCI.AudioCodec != media.CodecMP3 || currentCI.SampleRate == 0 {
+			rate, ch := mp3FrameInfo(pkt.Data)
+			var merged media.CodecInfo
+			if currentCI != nil {
+				merged = *currentCI
+			}
+			merged.AudioCodec = media.CodecMP3
+			merged.AACConfig = nil
+			merged.SampleRate, merged.Channels = rate, ch
+			newCI = &merged
+		}
 
 	case 11: // Speex
 		pkt.Codec = media.CodecSpeex
@@ -211,4 +229,56 @@ func decodeAudioTag(streamName string, currentCI *media.CodecInfo, msg *Message)
 		return nil, newCI
 	}
 	return pkt, newCI
+}
+
+// keepAudio copies the audio fields of prev into a CodecInfo freshly built
+// from a video sequence header. Without it, audio that was described first
+// (AAC config, or MP3 detected from frames) vanished whenever the encoder
+// sent or re-sent its video config, and outputs initialised in that window
+// saw no audio codec.
+func keepAudio(ci, prev *media.CodecInfo) {
+	if prev == nil {
+		return
+	}
+	ci.AudioCodec = prev.AudioCodec
+	ci.AACConfig = prev.AACConfig
+	ci.SampleRate = prev.SampleRate
+	ci.Channels = prev.Channels
+}
+
+// mp3SampleRates is indexed by [version][sample_rate_index], version 0 =
+// MPEG-1, 1 = MPEG-2, 2 = MPEG-2.5.
+var mp3SampleRates = [3][3]int{
+	{44100, 48000, 32000},
+	{22050, 24000, 16000},
+	{11025, 12000, 8000},
+}
+
+// mp3FrameInfo reads the sample rate and channel count from an MPEG audio
+// frame header (ISO/IEC 11172-3 2.4.1.3) at the start of b. It returns 0, 0
+// if b doesn't start with one.
+func mp3FrameInfo(b []byte) (rate, channels int) {
+	if len(b) < 4 || b[0] != 0xFF || b[1]&0xE0 != 0xE0 {
+		return 0, 0
+	}
+	var v int
+	switch (b[1] >> 3) & 3 {
+	case 3:
+		v = 0
+	case 2:
+		v = 1
+	case 0:
+		v = 2
+	default:
+		return 0, 0
+	}
+	idx := (b[2] >> 2) & 3
+	if idx == 3 {
+		return 0, 0
+	}
+	channels = 2
+	if b[3]>>6 == 3 {
+		channels = 1
+	}
+	return mp3SampleRates[v][idx], channels
 }

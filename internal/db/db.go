@@ -100,6 +100,7 @@ var migrations = []migration{
 	{11, schemav11},
 	{12, schemav12},
 	{13, schemav13},
+	{14, schemav14},
 }
 
 // ─── Schema v1: core tables ───────────────────────────────────────────────────
@@ -462,4 +463,14 @@ ALTER TABLE abr_variants ADD COLUMN audio_only    INTEGER NOT NULL DEFAULT 0;
 const schemav13 = `
 ALTER TABLE applications ADD COLUMN push_login    TEXT NOT NULL DEFAULT '';
 ALTER TABLE applications ADD COLUMN push_password TEXT NOT NULL DEFAULT '';
+`
+
+// ─── Schema v14: pull-source fallback URLs ───────────────────────────────────
+// Backup URLs a pull source switches to when its primary fails, and how
+// often it checks whether the primary is back (Nimble's "Fallback URLs" and
+// "Primary check interval"). fallback_urls is newline-separated, in order.
+// primary_check_s = 0 never switches back on its own.
+const schemav14 = `
+ALTER TABLE pull_sources ADD COLUMN fallback_urls   TEXT NOT NULL DEFAULT '';
+ALTER TABLE pull_sources ADD COLUMN primary_check_s INTEGER NOT NULL DEFAULT 30;
 `

@@ -23,6 +23,11 @@ type videoTrack struct {
 	clk clockUnwrapper
 
 	sps, pps []byte
+
+	// retimer turns RTP's single (presentation) timestamp into a valid
+	// DTS/PTS pair; without it, B-frames left DTS going backwards. RTP has
+	// no DTS, so it's always on. See media.H264Retimer.
+	retimer *media.H264Retimer
 }
 
 // newVideoTrack creates a video depacketizer. spropParameterSets is the
@@ -32,8 +37,9 @@ type videoTrack struct {
 // than (or in addition to) sending them in-band.
 func newVideoTrack(bus *media.Bus, spropParameterSets string) *videoTrack {
 	t := &videoTrack{
-		bus: bus,
-		sb:  samplebuilder.New(50, &codecs.H264Packet{}, 90000),
+		bus:     bus,
+		sb:      samplebuilder.New(50, &codecs.H264Packet{}, 90000),
+		retimer: media.NewH264Retimer(nil),
 	}
 	if spropParameterSets != "" {
 		parts := strings.Split(spropParameterSets, ",")
@@ -48,7 +54,11 @@ func newVideoTrack(bus *media.Bus, spropParameterSets string) *videoTrack {
 			}
 		}
 		if t.sps != nil {
+			t.retimer.SetSPS(t.sps)
 			t.mergeCodecInfo()
+		}
+		if t.pps != nil {
+			t.retimer.SetPPS(t.pps)
 		}
 	}
 	return t
@@ -66,7 +76,7 @@ func (t *videoTrack) handleRTP(payload []byte) {
 		if sample == nil {
 			break
 		}
-		dts := t.clk.tick(sample.PacketTimestamp)
+		pts := t.clk.tick(sample.PacketTimestamp)
 
 		for _, nal := range splitAnnexB(sample.Data) {
 			if len(nal) == 0 {
@@ -75,20 +85,23 @@ func (t *videoTrack) handleRTP(payload []byte) {
 			switch nalType := nal[0] & 0x1F; nalType {
 			case 7: // SPS
 				t.sps = nal
+				t.retimer.SetSPS(nal)
 				t.mergeCodecInfo()
 			case 8: // PPS
 				t.pps = nal
+				t.retimer.SetPPS(nal)
 				t.mergeCodecInfo()
 			case 1, 5: // non-IDR / IDR slice
-				t.bus.Publish(&media.Packet{
+				for _, p := range t.retimer.Push(&media.Packet{
 					Type:       pktType(nalType == 5),
 					Codec:      media.CodecH264,
-					DTS:        dts,
-					PTS:        dts,
+					PTS:        pts, // RTP timestamp = presentation time
 					IsKeyframe: nalType == 5,
 					Data:       withStartCode(nal),
 					WallClock:  time.Now(),
-				})
+				}, nal) {
+					t.bus.Publish(p)
+				}
 			}
 		}
 	}

@@ -19,12 +19,13 @@ import (
 
 	"github.com/5centscdn/origin-mediaserver/internal/dash"
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/mux"
 	"github.com/5centscdn/origin-mediaserver/internal/streamoutputs"
 	"github.com/5centscdn/origin-mediaserver/internal/tsout"
 	webrtcpkg "github.com/5centscdn/origin-mediaserver/internal/webrtc"
-	"github.com/5centscdn/origin-mediaserver/panel"
+	panelfs "github.com/5centscdn/origin-mediaserver/panel"
 )
 
 // llhlsMaxWait bounds how long a blocking LL-HLS playlist reload can hold a
@@ -154,13 +155,9 @@ func (s *Server) handleDASHManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := filepath.Join(s.cfg.Server.DataDir, "dash", app, stream, "manifest.mpd")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "stream not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	data, ok := livestore.Default().ReadFile(path)
+	if !ok {
+		http.Error(w, "stream not found", http.StatusNotFound)
 		return
 	}
 
@@ -519,14 +516,11 @@ func (s *Server) panelHandler() http.Handler {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// serveM3U8 serves a live playlist from the live cache (internal/livestore).
 func serveM3U8(w http.ResponseWriter, r *http.Request, path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "stream not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	data, ok := livestore.Default().ReadFile(path)
+	if !ok {
+		http.Error(w, "stream not found", http.StatusNotFound)
 		return
 	}
 
@@ -536,29 +530,22 @@ func serveM3U8(w http.ResponseWriter, r *http.Request, path string) {
 	w.Write(data)
 }
 
+// serveSegment serves a live segment, part or init file from the live
+// cache (internal/livestore): RAM, or disk while memory is short.
+// ServeContent handles Range requests.
 func serveSegment(w http.ResponseWriter, r *http.Request, path, contentType string) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "segment not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	content, _, ok := livestore.Default().Open(path)
+	if !ok {
+		http.Error(w, "segment not found", http.StatusNotFound)
 		return
 	}
-	defer f.Close()
-
-	stat, err := f.Stat()
-	if err != nil {
-		http.Error(w, "stat error", http.StatusInternalServerError)
-		return
-	}
+	defer content.Close()
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=31536000") // segments are immutable
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	http.ServeContent(w, r, stat.Name(), time.Time{}, f)
+	http.ServeContent(w, r, "", time.Time{}, content)
 }
 
 func segmentContentType(name string) string {
@@ -741,7 +728,7 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 		if ci.Width > 0 && ci.Height > 0 {
 			attrs = fmt.Sprintf("BANDWIDTH=0,FRAME-RATE=%.3f,RESOLUTION=%dx%d,CODECS=%q",
 				30.0, ci.Width, ci.Height,
-				videoCodecString(ci)+","+media.AACCodecString(ci))
+				videoCodecString(ci)+","+media.AudioCodecString(ci))
 		}
 	}
 	if splitAudio {
@@ -774,10 +761,10 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 	s.servePlaylistOrDelta(w, r, app, stream, path)
 }
 
-// servePlaylistOrDelta serves the on-disk playlist file, unless the request
+// servePlaylistOrDelta serves the stored playlist, unless the request
 // carries ?_HLS_skip=YES and this stream has a live *hls.Playlist to render
 // a Delta Update from (see Playlist.RenderDelta) — in which case that's
-// rendered fresh and returned instead, since the on-disk file only ever
+// rendered fresh and returned instead, since the stored playlist only ever
 // holds the full (non-delta) playlist.
 func (s *Server) servePlaylistOrDelta(w http.ResponseWriter, r *http.Request, app, stream, fallbackPath string) {
 	if r.URL.Query().Get("_HLS_skip") == "YES" && s.hlsPlaylists != nil {
@@ -793,7 +780,7 @@ func (s *Server) servePlaylistOrDelta(w http.ResponseWriter, r *http.Request, ap
 // handleDirectSegment serves /{app}/{stream}/{segment} — an HLS segment, or
 // (now that DASH is mounted with no path prefix of its own — see router.go)
 // a DASH segment/init file sharing this same URL shape. Tries the HLS
-// on-disk directory first, falling back to DASH's — extension alone can't
+// output first, falling back to DASH's — extension alone can't
 // disambiguate, since fmp4/cmaf-container HLS and DASH can both produce
 // .m4s/.mp4 files.
 func (s *Server) handleDirectSegment(w http.ResponseWriter, r *http.Request) {
@@ -806,7 +793,7 @@ func (s *Server) handleDirectSegment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hlsPath := filepath.Join(s.cfg.Server.DataDir, "hls", app, stream, segment)
-	if _, err := os.Stat(hlsPath); err == nil {
+	if livestore.Default().Exists(hlsPath) {
 		s.serveHLSSegment(w, r, hlsPath, segment, app, stream)
 		return
 	}

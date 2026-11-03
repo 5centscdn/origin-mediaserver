@@ -75,6 +75,17 @@ type Demuxer struct {
 
 	lastVideoDTS int64 // fallback PTS for an SCTE-35 command carrying no explicit splice_time
 
+	// retimer rebuilds DTS (and repairs PTS from the bitstream's POC) while
+	// the source sends video PES packets with a PTS but no DTS, which with
+	// B-frames leaves DTS going backwards. See media.H264Retimer.
+	retimer *media.H264Retimer
+	// sawVideoDTS is sticky once any video PES carries a DTS. Muxers
+	// (ffmpeg among them) leave DTS out whenever it equals PTS, which the
+	// spec defines as DTS = PTS, so PTS-only PES packets in such a stream
+	// are normal and must not be retimed. Only a stream that never sends
+	// DTS is.
+	sawVideoDTS bool
+
 	// OnSCTE35Error, if set, is called (synchronously, on the demux
 	// goroutine) whenever a section on the detected SCTE-35 PID fails to
 	// parse — wiring this to a metrics counter is the caller's choice,
@@ -357,8 +368,27 @@ func (d *Demuxer) flushVideo(data []byte) {
 		return
 	}
 	pts, dts := h.pts, h.dts
+	if h.hasDTS {
+		d.sawVideoDTS = true
+	}
 	if !h.hasDTS {
 		dts = pts
+	}
+	if !d.sawVideoDTS {
+		if d.retimer == nil {
+			d.retimer = media.NewH264Retimer(d.log)
+			if len(d.sps) > 0 {
+				d.retimer.SetSPS(d.sps)
+			}
+			if len(d.pps) > 0 {
+				d.retimer.SetPPS(d.pps)
+			}
+		}
+	} else if d.retimer != nil {
+		// The source sends DTS after all: release what's buffered and
+		// pass timestamps through from here on.
+		d.publishVideo(d.retimer.Flush())
+		d.retimer = nil
 	}
 	d.lastVideoDTS = dts
 
@@ -381,9 +411,15 @@ func (d *Demuxer) flushVideo(data []byte) {
 		case 7: // SPS
 			d.sps = nal
 			d.mergeVideoCodecInfo()
+			if d.retimer != nil {
+				d.retimer.SetSPS(nal)
+			}
 		case 8: // PPS
 			d.pps = nal
 			d.mergeVideoCodecInfo()
+			if d.retimer != nil {
+				d.retimer.SetPPS(nal)
+			}
 		case 6: // SEI
 			pendingSEI = append(pendingSEI, withStartCode(nal)...)
 			if !d.hasCEA608708 && media.HasCEA608708(nal) {
@@ -404,7 +440,7 @@ func (d *Demuxer) flushVideo(data []byte) {
 				sliceData = append(pendingSEI, sliceData...)
 				pendingSEI = nil
 			}
-			d.bus.Publish(&media.Packet{
+			pkt := &media.Packet{
 				Type:       pktType,
 				Codec:      media.CodecH264,
 				DTS:        dts,
@@ -412,8 +448,22 @@ func (d *Demuxer) flushVideo(data []byte) {
 				IsKeyframe: nalType == 5,
 				Data:       sliceData,
 				WallClock:  time.Now(),
-			})
+			}
+			if d.retimer != nil {
+				d.publishVideo(d.retimer.Push(pkt, nal))
+			} else {
+				d.bus.Publish(pkt)
+			}
 		}
+	}
+}
+
+// publishVideo publishes retimed video packets and keeps lastVideoDTS on
+// the timeline downstream actually sees.
+func (d *Demuxer) publishVideo(pkts []*media.Packet) {
+	for _, p := range pkts {
+		d.lastVideoDTS = p.DTS
+		d.bus.Publish(p)
 	}
 }
 
@@ -574,6 +624,9 @@ func (d *Demuxer) Flush() {
 	if buf := d.pesBuf[d.videoPID]; len(buf) > 0 {
 		d.flushVideo(buf)
 		delete(d.pesBuf, d.videoPID)
+	}
+	if d.retimer != nil {
+		d.publishVideo(d.retimer.Flush())
 	}
 	if buf := d.pesBuf[d.audioPID]; len(buf) > 0 {
 		d.flushAudio(buf)

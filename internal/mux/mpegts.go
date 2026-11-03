@@ -95,6 +95,34 @@ func NewTSMuxerAudioOnly(w io.Writer, audioStreamType uint8) *TSMuxer {
 	}
 }
 
+// SetAudioStreamType changes the PMT's audio stream_type and reports
+// whether it changed. The type is chosen when the muxer is built, from
+// CodecInfo, but RTMP has no audio config record for MP3: an FMLE stream
+// (MP3 by default) builds its muxer on the video sequence header, before
+// any audio has been seen, and used to declare MP3 as AAC (0x0F). hls.js
+// then runs its ADTS parser on MP3 frames and fails with fragParsingError.
+// Callers set the type from each audio packet's codec; a change takes
+// effect at the next PAT/PMT.
+func (m *TSMuxer) SetAudioStreamType(st uint8) bool {
+	if m.audioSType == st {
+		return false
+	}
+	m.audioSType = st
+	return true
+}
+
+// AudioStreamTypeFor returns the PMT stream_type for an audio codec name
+// ("aac", "mp3", "ac3"), defaulting to AAC.
+func AudioStreamTypeFor(codec string) uint8 {
+	switch codec {
+	case "mp3":
+		return streamTypeMP3
+	case "ac3":
+		return streamTypeAC3
+	}
+	return streamTypeAAC
+}
+
 // SetSPSPPS provides H.264 parameter sets to be inserted before keyframes.
 func (m *TSMuxer) SetSPSPPS(sps, pps []byte) {
 	m.sps = sps

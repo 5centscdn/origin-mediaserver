@@ -28,7 +28,7 @@ import {
   ABRTrack,
   ABRVariant,
 } from '@/lib/api'
-import { formatBitrate, copyToClipboard } from '@/lib/utils'
+import { formatBitrate, copyToClipboard, isStreamPattern, matchesStreamPattern } from '@/lib/utils'
 
 // ABR groups follow the standalone DVR server's editor: a group is an app
 // plus a name (served at /{app}/{name}/playlist.m3u8) and an ordered list of
@@ -67,8 +67,10 @@ function ABRContent() {
     { refreshInterval: 10000 },
   )
 
+  // For a pattern track (test%i): live if any matching stream is.
   const isLive = (app: string, stream: string) =>
-    (live ?? []).some((s) => s.app === app && s.name === stream)
+    (live ?? []).some((s) => s.app === app && matchesStreamPattern(stream, s.name))
+
 
   const copyURL = async () => {
     if (!selected) return
@@ -212,6 +214,11 @@ function ABRContent() {
                           <tr key={v.id}>
                             <td className="px-4 py-2.5 text-white font-mono text-xs">
                               {v.stream_name}
+                              {(v.stream_name.includes('%i') || v.stream_name.includes('*')) && (
+                                <span className="ml-2">
+                                  <Badge variant="purple">every match</Badge>
+                                </span>
+                              )}
                               {v.audio_only && (
                                 <span className="ml-2">
                                   <Badge variant="purple">audio</Badge>
@@ -343,6 +350,14 @@ function GroupModal({
       live: liveNames.has(name),
     }))
   const patterns = (configs ?? []).filter((c) => c.is_wildcard).map((c) => c.name_pattern)
+  // A pattern track (test%i) stands for every matching stream; the master
+  // expands it to whatever is live (internal/api.expandPatternTracks).
+  const isPattern = isStreamPattern
+  const liveMatches = (pat: string) =>
+    Array.from(liveNames)
+      .filter((n) => matchesStreamPattern(pat, n))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+
 
   useStateReset(JSON.stringify({ open, eid: edit?.id ?? null }), () => {
     if (!open) return
@@ -396,7 +411,7 @@ function GroupModal({
     }
   }
 
-  const cell = inputClass + ' !py-1.5 text-sm'
+  const cell = inputClass + ' !py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed'
 
   return (
     <Modal
@@ -471,48 +486,79 @@ function GroupModal({
                       <select
                         required
                         value={t.stream_name}
-                        onChange={(e) => setTrack(i, { stream_name: e.target.value })}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setTrack(
+                            i,
+                            isPattern(v)
+                              ? { stream_name: v, bandwidth: 0, avg_bandwidth: 0, resolution: '' }
+                              : { stream_name: v },
+                          )
+                        }}
                         className={cell}
                       >
                         <option value="">
                           {appName ? '— select a stream —' : '— select an app first —'}
                         </option>
-                        {streamOptions(t.stream_name).map((o) => (
-                          <option key={o.name} value={o.name}>
-                            {appName}/{o.name}
-                            {o.live ? ' (live)' : ''}
-                          </option>
-                        ))}
+                        {patterns.length > 0 && (
+                          <optgroup label="All matching streams (auto)">
+                            {patterns.map((p) => (
+                              <option key={p} value={p}>
+                                {appName}/{p} — every match
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label="Single stream">
+                          {streamOptions(t.stream_name)
+                            .filter((o) => !isPattern(o.name) || !patterns.includes(o.name))
+                            .map((o) => (
+                              <option key={o.name} value={o.name}>
+                                {appName}/{o.name}
+                                {o.live ? ' (live)' : ''}
+                              </option>
+                            ))}
+                        </optgroup>
                       </select>
+                      {isPattern(t.stream_name) && (
+                        <div className="mt-1 text-[11px] text-purple-300">
+                          {liveMatches(t.stream_name).length
+                            ? `live now: ${liveMatches(t.stream_name).join(', ')}`
+                            : 'none live now; renditions appear as they publish'}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-2 min-w-[120px]">
                       <input
                         type="number"
                         min={0}
-                        value={t.bandwidth || ''}
+                        value={isPattern(t.stream_name) ? '' : t.bandwidth || ''}
                         onChange={(e) => setTrack(i, { bandwidth: Number(e.target.value) || 0 })}
                         className={cell}
-                        placeholder="0=auto"
+                        disabled={isPattern(t.stream_name)}
+                        placeholder={isPattern(t.stream_name) ? 'auto per stream' : '0=auto'}
                       />
                     </td>
                     <td className="px-2 py-2 min-w-[120px]">
                       <input
                         type="number"
                         min={0}
-                        value={t.avg_bandwidth || ''}
+                        value={isPattern(t.stream_name) ? '' : t.avg_bandwidth || ''}
                         onChange={(e) =>
                           setTrack(i, { avg_bandwidth: Number(e.target.value) || 0 })
                         }
                         className={cell}
-                        placeholder="0=omit"
+                        disabled={isPattern(t.stream_name)}
+                        placeholder={isPattern(t.stream_name) ? 'auto' : '0=omit'}
                       />
                     </td>
                     <td className="px-2 py-2 min-w-[110px]">
                       <input
-                        value={t.resolution}
+                        value={isPattern(t.stream_name) ? '' : t.resolution}
                         onChange={(e) => setTrack(i, { resolution: e.target.value })}
                         className={cell}
-                        placeholder="auto"
+                        disabled={isPattern(t.stream_name)}
+                        placeholder={isPattern(t.stream_name) ? 'auto per stream' : 'auto'}
                         pattern="\d+[xX]\d+"
                         title="WIDTHxHEIGHT, e.g. 1280x720, or empty for auto"
                       />
@@ -548,11 +594,21 @@ function GroupModal({
               </tbody>
             </table>
           </div>
-          {patterns.length > 0 && (
-            <div className="text-xs text-gray-500 mt-2">
-              Streams matching {patterns.join(', ')} appear here once they are live.
-            </div>
-          )}
+          <div className="text-xs text-gray-500 mt-2">
+            Lists {appName || "the app"}&apos;s streams (create them under{' '}
+            <a href="/stream-configs/" className="text-blue-400 hover:text-blue-300">
+              Streams
+            </a>
+            , e.g. test1…test5) plus anything live now. Offline tracks are left out of the master
+            until they publish.
+            {patterns.length > 0 && (
+              <>
+                {' '}Choose <span className="font-mono text-gray-400">{patterns[0]}</span> to include every
+                matching stream automatically (test1, test2, … as they publish); bandwidth and
+                resolution then come from each stream.
+              </>
+            )}
+          </div>
         </div>
 
         <ErrorBox msg={err} />

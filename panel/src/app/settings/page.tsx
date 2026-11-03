@@ -14,6 +14,7 @@ import {
   useStateReset,
 } from '@/components/FormHelpers'
 import { getNodeInfo, updateDVRConfig } from '@/lib/api'
+import { listenPort } from '@/lib/utils'
 
 export default function SettingsPage() {
   return (
@@ -55,6 +56,34 @@ function SettingsContent() {
           </code>
         </Row>
         <Row label="Active streams">{node?.stream_count ?? 0}</Row>
+        <Row label="Live cache">
+          {node?.live_cache ? (
+            <span className="flex flex-wrap items-center gap-2">
+              <Badge variant="gray">mode: {node.live_cache.policy}</Badge>
+              {node.live_cache.mode === 'disk' ? (
+                <Badge variant={node.live_cache.policy === 'disk' ? 'gray' : 'yellow'}>
+                  {node.live_cache.policy === 'disk' ? 'on disk' : 'on disk (memory high)'}
+                </Badge>
+              ) : (
+                <Badge variant="green">in RAM</Badge>
+              )}
+              <span>
+                {(node.live_cache.bytes / 1048576).toFixed(1)} MB in RAM
+                {node.live_cache.disk_files > 0 &&
+                  `, ${(node.live_cache.disk_bytes / 1048576).toFixed(1)} MB on disk`}
+              </span>
+            </span>
+          ) : (
+            '—'
+          )}
+        </Row>
+        <Row label="Memory used">
+          {node?.live_cache && node.live_cache.memory_used_pct >= 0
+            ? node.live_cache.policy === 'hybrid'
+              ? `${node.live_cache.memory_used_pct}% (disk above ${node.live_cache.memory_high_pct}%, RAM again below ${node.live_cache.memory_low_pct}%)`
+              : `${node.live_cache.memory_used_pct}% (warning above ${node.live_cache.memory_high_pct}%)`
+            : '—'}
+        </Row>
       </Section>
 
       <Section title="RTMP">
@@ -65,7 +94,7 @@ function SettingsContent() {
         </Row>
         <Row label="Publish URL">
           <code className="text-xs font-mono text-gray-300">
-            rtmp://&lt;host&gt;{node?.rtmp_listen ?? ':1935'}/&lt;app&gt;/&lt;stream&gt;
+            rtmp://&lt;host&gt;{listenPort(node?.rtmp_listen, ':1935')}/&lt;app&gt;/&lt;stream&gt;
           </code>
         </Row>
       </Section>
@@ -85,7 +114,7 @@ function SettingsContent() {
         </Row>
         <Row label="Publish URL">
           <code className="text-xs font-mono text-gray-300">
-            srt://&lt;host&gt;{srt.listen ?? ':4000'}?streamid=&lt;app&gt;/&lt;stream&gt;
+            srt://&lt;host&gt;{listenPort(srt.listen, ':4000')}?streamid=&lt;app&gt;/&lt;stream&gt;
           </code>
         </Row>
         <Row label="Latency">
@@ -101,7 +130,7 @@ function SettingsContent() {
         </Row>
         <Row label="Playback URL">
           <code className="text-xs font-mono text-gray-300">
-            http://&lt;host&gt;{node?.http_listen ?? ':8080'}/&lt;app&gt;/&lt;stream&gt;/playlist.m3u8
+            http://&lt;host&gt;{listenPort(node?.http_listen, ':8080')}/&lt;app&gt;/&lt;stream&gt;/playlist.m3u8
           </code>
         </Row>
       </Section>

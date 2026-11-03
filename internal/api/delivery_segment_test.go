@@ -4,12 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/db"
+	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
 	"github.com/5centscdn/origin-mediaserver/internal/scte35ctrl"
@@ -45,23 +45,11 @@ func TestHandleDirectSegment_DisambiguatesHLSAndDASHByDirectory(t *testing.T) {
 
 	hlsDir := filepath.Join(dataDir, "hls", "app1", "s1")
 	dashDir := filepath.Join(dataDir, "dash", "app1", "s1")
-	if err := os.MkdirAll(hlsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(dashDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	// Same filename shape (init.mp4) in both directories, on purpose — the
 	// point is the handler must not be fooled by the shared extension.
-	if err := os.WriteFile(filepath.Join(hlsDir, "init.mp4"), []byte("HLS-INIT-BYTES"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dashDir, "init.mp4"), []byte("DASH-INIT-BYTES"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dashDir, "seg-video-1.m4s"), []byte("DASH-SEG-BYTES"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	livestore.Default().WriteFile(filepath.Join(hlsDir, "init.mp4"), []byte("HLS-INIT-BYTES"))
+	livestore.Default().WriteFile(filepath.Join(dashDir, "init.mp4"), []byte("DASH-INIT-BYTES"))
+	livestore.Default().WriteFile(filepath.Join(dashDir, "seg-video-1.m4s"), []byte("DASH-SEG-BYTES"))
 
 	get := func(path string) string {
 		t.Helper()
@@ -110,12 +98,7 @@ func TestDASHManifest_ServedWithNoPathPrefix(t *testing.T) {
 	srv := New(ctx, cfg, database, registry, nil, nil, nil, nil, nil, nil, m, scte35Mgr)
 
 	dashDir := filepath.Join(dataDir, "dash", "app1", "s1")
-	if err := os.MkdirAll(dashDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dashDir, "manifest.mpd"), []byte("<MPD/>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	livestore.Default().WriteFile(filepath.Join(dashDir, "manifest.mpd"), []byte("<MPD/>"))
 
 	req := httptest.NewRequest(http.MethodGet, "/app1/s1/manifest.mpd", nil)
 	rec := httptest.NewRecorder()

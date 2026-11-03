@@ -36,13 +36,16 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
       onClick={onClose}
     >
       <div
+        // Capped to the viewport: a long form (e.g. Edit Application)
+        // scrolls inside the body instead of pushing its Save button off
+        // screen. ModalActions stays pinned to the bottom while it scrolls.
         className={
-          'w-full bg-gray-900 rounded-lg border border-gray-700 shadow-2xl ' +
+          'w-full max-h-full flex flex-col bg-gray-900 rounded-lg border border-gray-700 shadow-2xl ' +
           sizes[size]
         }
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+        <div className="flex shrink-0 items-center justify-between px-5 py-3 border-b border-gray-800">
           <h2 className="text-base font-semibold text-white">{title}</h2>
           <button
             type="button"
@@ -53,7 +56,7 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
             <X size={18} />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5">{children}</div>
       </div>
     </div>
   )
