@@ -41,7 +41,10 @@ make urls          # prints example ingest/playback URLs
   - `webrtc`: WHIP publish and WHEP sessions (pion)
   - `icecast`: MP3/ADTS audio only
   - `ingest/mpegts`: UDP, HTTP pull, demux
-  - `ingest/rtsp`
+  - `ingest/rtsp`: TCP-interleaved RTP, H.264 + G.711. SDP lines are put
+    in RFC 4566 order before pion/sdp parses them (`normalizeSDP`):
+    Hikvision cameras send session `b=` after `t=`/`a=`, which pion
+    rejects outright.
   - `pull`: managed outbound pull sources with reconnect (rtmp, rtsp,
     mpegts_http, mpegts_udp, srt), and Nimble-style fallback URLs: on
     failure, or no media for 10 s (an RTMP server with nothing published
@@ -161,7 +164,10 @@ make urls          # prints example ingest/playback URLs
 - Ingest codecs: H.264/HEVC video and AAC/MP3/MP2 audio. MP3 audio
   (e.g. FMLE) reaches HLS with the `ts` container (stream_type 0x03,
   CODECS `mp4a.40.34`) and MPEG-TS output only; DVR, DASH and fMP4/CMAF
-  HLS carry the video without it.
+  HLS carry the video without it. G.711 (PCMU/PCMA, RTSP cameras) and
+  Opus (WHIP) aren't carried at all: the PMT and the master playlist's
+  CODECS leave the audio out (`media.TSAudioStreamless`/`TSAudioCodec`),
+  since players wait for an advertised track that never arrives.
 - `H264Retimer` covers H.264 only. HEVC that arrives without DTS (and
   WHIP, which also has only RTP timestamps but goes through pion) isn't
   retimed yet. POC types 1 and field-coded pictures fall back to ordering

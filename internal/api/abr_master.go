@@ -244,7 +244,7 @@ func streamInf(t abrTrack, st *media.Stream) string {
 
 	w, h, codecs := t.width, t.height, t.codecs
 	if ci != nil {
-		hasAudio := ci.AudioCodec != media.CodecUnknown
+		hasAudio := media.TSAudioCodec(ci.AudioCodec)
 		hasVideo := !t.audioOnly && ci.VideoCodec != media.CodecUnknown
 		if w == 0 && h == 0 && hasVideo {
 			w, h = ci.Width, ci.Height

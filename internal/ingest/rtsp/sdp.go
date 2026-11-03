@@ -3,6 +3,7 @@ package rtsp
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -31,12 +32,56 @@ type track struct {
 	spropParameterSets string
 }
 
+// SDP line order per RFC 4566 section 5, which pion/sdp enforces.
+const (
+	sessionOrder = "vosiuepcbtrzka"
+	mediaOrder   = "micbka"
+)
+
+// normalizeSDP puts each section's lines in RFC 4566 order before pion/sdp
+// parses them. Cameras don't always follow it, and pion rejects the whole
+// description over one misplaced line. Seen on Hikvision ("HIK Media
+// Server V4.83.600"): a session-level b=AS after t= and a=control, which
+// ffmpeg, VLC and Nimble accept. The sort is stable, so repeated lines
+// (several a=) keep their order. Lines with an unknown type go last in
+// their section; empty lines are dropped.
+func normalizeSDP(body []byte) []byte {
+	lines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
+	var out []string
+	var section []string
+	order := sessionOrder
+	flush := func() {
+		rank := func(l string) int {
+			if i := strings.IndexByte(order, l[0]); i >= 0 {
+				return i
+			}
+			return len(order)
+		}
+		sort.SliceStable(section, func(a, b int) bool { return rank(section[a]) < rank(section[b]) })
+		out = append(out, section...)
+		section = nil
+	}
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if len(l) < 2 || l[1] != '=' {
+			continue
+		}
+		if l[0] == 'm' {
+			flush()
+			order = mediaOrder
+		}
+		section = append(section, l)
+	}
+	flush()
+	return []byte(strings.Join(out, "\r\n") + "\r\n")
+}
+
 // parseSDP extracts the first H.264 video track and first PCMU/PCMA audio
 // track from an SDP body. baseURL is the RTSP request URL DESCRIBE was sent
 // to, used to resolve relative a=control values per RFC 2326.
 func parseSDP(body []byte, baseURL string) (video, audio *track, err error) {
 	var sd sdp.SessionDescription
-	if err := sd.Unmarshal(body); err != nil {
+	if err := sd.Unmarshal(normalizeSDP(body)); err != nil {
 		return nil, nil, fmt.Errorf("parse sdp: %w", err)
 	}
 

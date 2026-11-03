@@ -723,12 +723,21 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 			ccGroupID, ccInstreamID)
 	}
 
-	attrs := "BANDWIDTH=0"
+	// Same rules as the ABR master's streamInf: measured BANDWIDTH (0 is
+	// invalid), the real frame rate when known, and CODECS naming only
+	// tracks the segments carry (G.711 audio from an RTSP camera is
+	// dropped; advertising it makes players wait for audio).
+	attrs := fmt.Sprintf("BANDWIDTH=%d", measuredBandwidth(streamObj))
 	if ci != nil {
 		if ci.Width > 0 && ci.Height > 0 {
-			attrs = fmt.Sprintf("BANDWIDTH=0,FRAME-RATE=%.3f,RESOLUTION=%dx%d,CODECS=%q",
-				30.0, ci.Width, ci.Height,
-				videoCodecString(ci)+","+media.AudioCodecString(ci))
+			if ci.FrameRate > 0 {
+				attrs += fmt.Sprintf(",FRAME-RATE=%.3f", ci.FrameRate)
+			}
+			codecs := videoCodecString(ci)
+			if media.TSAudioCodec(ci.AudioCodec) {
+				codecs += "," + media.AudioCodecString(ci)
+			}
+			attrs += fmt.Sprintf(",RESOLUTION=%dx%d,CODECS=%q", ci.Width, ci.Height, codecs)
 		}
 	}
 	if splitAudio {

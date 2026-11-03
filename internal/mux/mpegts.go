@@ -268,11 +268,16 @@ func (m *TSMuxer) writePMT() error {
 	} else {
 		pcrPID = m.audioPID
 	}
-	esInfo = append(esInfo,
-		m.audioSType,
-		byte(m.audioPID>>8)|0xE0, byte(m.audioPID),
-		0xF0, 0x00,
-	)
+	// audioSType 0: the source's audio can't be carried (see
+	// media.TSAudioStreamless), so declare video only rather than an audio
+	// PID that never gets a packet (players wait for it).
+	if m.audioSType != 0 {
+		esInfo = append(esInfo,
+			m.audioSType,
+			byte(m.audioPID>>8)|0xE0, byte(m.audioPID),
+			0xF0, 0x00,
+		)
+	}
 	if m.scte35PID != 0 {
 		// registration_descriptor (tag 0x05, length 4, "CUEI") — the
 		// real-world SCTE-35/ANSI convention downstream ad-insertion tools

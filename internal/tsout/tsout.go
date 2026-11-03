@@ -161,6 +161,9 @@ func newMuxer(w http.ResponseWriter, ci *media.CodecInfo, scte35Enabled bool) *m
 	case media.CodecAC3:
 		audioType = mux.StreamTypeAC3
 	}
+	if media.TSAudioStreamless(ci) {
+		audioType = 0 // audio we can't carry: video-only PMT
+	}
 
 	m := mux.NewTSMuxer(w, videoType, audioType)
 	if scte35Enabled {

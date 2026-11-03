@@ -637,6 +637,9 @@ func (p *Packager) initMuxer(ci *media.CodecInfo) {
 	case media.CodecAC3:
 		audioStreamType = mux.StreamTypeAC3
 	}
+	if media.TSAudioStreamless(ci) {
+		audioStreamType = 0 // e.g. G.711 from an RTSP camera: video-only PMT
+	}
 
 	p.segMuxer = mux.NewTSMuxer(&p.segBuf, uint8(videoStreamType), uint8(audioStreamType))
 	if p.passthroughEnabled() || p.insertEnabled() {

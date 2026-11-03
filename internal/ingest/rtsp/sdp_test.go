@@ -93,3 +93,44 @@ func TestParseSDP_NoSuitableMedia(t *testing.T) {
 		t.Error("expected an error for an SDP with no media descriptions at all")
 	}
 }
+
+// A Hikvision camera ("HIK Media Server V4.83.600") puts the session b=
+// after t= and a=, out of RFC 4566 order; pion/sdp rejected it ("syntax
+// error at pos 172") and the pull never started. Captured from a real
+// DS-series NVR channel; ffmpeg plays it.
+func TestParseSDP_HikvisionOutOfOrder(t *testing.T) {
+	body := "v=0\r\n" +
+		"o=- 1109162014219182 0 IN IP4 0.0.0.0\r\n" +
+		"s=HIK Media Server V4.83.600\r\n" +
+		"i=HIK Media Server Session Description : standard\r\n" +
+		"e=NONE\r\n" +
+		"c=IN IP4 0.0.0.0\r\n" +
+		"t=0 0\r\n" +
+		"a=control:*\r\n" +
+		"b=AS:1546\r\n" +
+		"a=range:npt=now-\r\n" +
+		"m=video 0 RTP/AVP 96\r\n" +
+		"i=Video Media\r\n" +
+		"a=rtpmap:96 H264/90000\r\n" +
+		"a=fmtp:96 profile-level-id=4D0014;packetization-mode=0;sprop-parameter-sets=Z2QAIKwbGoDwCJoQAABwgAAV+QBA,aO48sA==\r\n" +
+		"a=control:trackID=video\r\n" +
+		"b=AS:1536\r\n" +
+		"m=audio 0 RTP/AVP 0\r\n" +
+		"i=Audio Media\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n" +
+		"a=control:trackID=audio\r\n" +
+		"b=AS:10\r\n" +
+		"a=Media_header:MEDIAINFO=494D4B48020100000400000110710110401F000000FA000000000000000000000000000000000000;\r\n" +
+		"a=appversion:1.0\r\n"
+	base := "rtsp://203.0.113.5:554/Streaming/Channels/301"
+	video, audio, err := parseSDP([]byte(body), base)
+	if err != nil {
+		t.Fatalf("parseSDP: %v", err)
+	}
+	if video == nil || video.codec != "H264" || video.controlURL != base+"/trackID=video" || video.spropParameterSets == "" {
+		t.Errorf("video track = %+v", video)
+	}
+	if audio == nil || audio.codec != "PCMU" || audio.clockRate != 8000 || audio.controlURL != base+"/trackID=audio" {
+		t.Errorf("audio track = %+v", audio)
+	}
+}

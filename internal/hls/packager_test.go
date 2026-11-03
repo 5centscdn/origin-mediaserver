@@ -41,15 +41,42 @@ func TestHandleAudio_SkipsUnsupportedCodec(t *testing.T) {
 		t.Errorf("segBuf grew from %d to %d bytes — Opus audio was not skipped", before, p.segBuf.Len())
 	}
 
+	// The PMT declares no audio track for audio it can't carry (players
+	// wait for an advertised track): video PID 0x100 only, no 0x101.
+	if err := p.segMuxer.WriteVideo([]byte{0, 0, 0, 1, 0x65, 0x88}, 90000, 90000, true); err != nil {
+		t.Fatal(err)
+	}
+	if pmt := findPMT(p.segBuf.Bytes()); pmt == nil || strings.Contains(string(pmt), "\xe1\x01\xf0") || !strings.Contains(string(pmt), "\x1b\xe1\x00") {
+		t.Errorf("PMT for an Opus stream = % x, want H.264 only", pmt)
+	}
+
 	// Sanity check: AAC through the same path does write bytes, so the
 	// assertion above is actually exercising the skip and not just a no-op
 	// segMuxer.
-	if err := p.handleAudio(&media.Packet{Type: media.PacketMedia, Codec: media.CodecAAC, PTS: 100, Data: []byte{1, 2, 3, 4}}); err != nil {
+	aci := &media.CodecInfo{VideoCodec: media.CodecH264, AudioCodec: media.CodecAAC, AACConfig: []byte{0x11, 0x90}}
+	astream := &media.Stream{Key: media.StreamKey{App: "test", Name: "s2"}, Bus: media.NewBus()}
+	astream.Bus.SetCodecInfo(aci)
+	ap := &Packager{cfg: cfg, stream: astream, outDir: t.TempDir(), log: slog.Default()}
+	ap.initMuxer(aci)
+	ap.segStartDTS = 1
+	abefore := ap.segBuf.Len()
+	if err := ap.handleAudio(&media.Packet{Type: media.PacketMedia, Codec: media.CodecAAC, PTS: 100, Data: []byte{1, 2, 3, 4}}); err != nil {
 		t.Fatalf("handleAudio (AAC) returned error: %v", err)
 	}
-	if p.segBuf.Len() == before {
+	if ap.segBuf.Len() == abefore {
 		t.Error("segBuf did not grow for AAC audio — sanity check failed, WriteAudio path itself may be broken")
 	}
+}
+
+// findPMT returns the payload of the first PMT packet (PID 0x1000) in a TS
+// buffer.
+func findPMT(ts []byte) []byte {
+	for i := 0; i+188 <= len(ts); i += 188 {
+		if pid := int(ts[i+1]&0x1F)<<8 | int(ts[i+2]); pid == 0x1000 {
+			return ts[i+4 : i+188]
+		}
+	}
+	return nil
 }
 
 // TestHandleVideo_LazyInitsFromCodecInfoWithoutConfigPacket guards against a

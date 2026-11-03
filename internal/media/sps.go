@@ -22,6 +22,26 @@ func AACCodecString(_ *CodecInfo) string {
 // internal/ingest/mpegts/mp2.go) must advertise "mp4a.6B" (ISO/IEC 14496-1
 // Table 5's objectTypeIndication for MPEG-1 Audio — see
 // mux.MPEG1AudioObjectType), not a misleading AAC string.
+// TSAudioCodec reports whether c is audio the HLS (TS) and MPEG-TS outputs
+// carry. Others (G.711 from RTSP cameras, Opus from WHIP) are dropped, so
+// playlists and PMTs must not advertise them: a player told there's audio
+// waits for it.
+func TSAudioCodec(c CodecType) bool {
+	switch c {
+	case CodecAAC, CodecMP3, CodecAC3:
+		return true
+	}
+	return false
+}
+
+// TSAudioStreamless reports whether ci names an audio codec the TS outputs
+// can't carry, so the PMT should declare no audio track at all. Audio not
+// seen yet (CodecUnknown) isn't: RTMP MP3 has no config record and is
+// corrected from the first packet (TSMuxer.SetAudioStreamType).
+func TSAudioStreamless(ci *CodecInfo) bool {
+	return ci != nil && ci.AudioCodec != CodecUnknown && !TSAudioCodec(ci.AudioCodec)
+}
+
 func AudioCodecString(ci *CodecInfo) string {
 	if ci != nil && ci.AudioCodec == CodecMP2 {
 		return "mp4a.6B"
