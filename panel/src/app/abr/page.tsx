@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import clsx from 'clsx'
-import { Plus, Trash2, Pencil, Layers, X, ExternalLink, ListPlus } from 'lucide-react'
+import { Plus, Trash2, Pencil, Layers, X, ExternalLink, ListPlus, ChevronRight } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
@@ -38,6 +38,7 @@ import {
   StatusBadge,
   buttonClass,
   useToast,
+  Tooltip,
 } from '@/components/ui'
 import {
   listABRGroups,
@@ -167,17 +168,24 @@ function ABRContent() {
                       onClick={() => setSelectedId(g.id)}
                       aria-current={active ? 'true' : undefined}
                       className={clsx(
-                        'block w-full border-l-2 px-4 py-2.5 text-left transition-colors',
+                        'flex w-full items-center gap-3 border-l-[3px] px-4 py-3 text-left transition-colors',
                         'focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary-fg',
-                        active ? 'border-primary bg-primary/10' : 'border-transparent hover:bg-elevated/60',
+                        active ? 'border-primary-fg bg-primary/15' : 'border-transparent hover:bg-elevated/70',
                       )}
                     >
-                      <div className={clsx('truncate text-sm font-medium', active ? 'text-fg' : 'text-fg-secondary')}>
-                        {g.stream_name}
+                      <div className="min-w-0 flex-1">
+                        <div className={clsx('truncate text-sm', active ? 'font-semibold text-fg' : 'font-medium text-fg-secondary')}>
+                          {g.stream_name}
+                        </div>
+                        <div className="truncate font-mono text-xs text-fg-muted">
+                          {g.app_name}/{g.stream_name}
+                        </div>
                       </div>
-                      <div className="truncate font-mono text-xs text-fg-muted">
-                        {g.app_name}/{g.stream_name}
-                      </div>
+                      <ChevronRight
+                        size={15}
+                        aria-hidden
+                        className={clsx('shrink-0 transition-opacity', active ? 'text-primary-fg opacity-100' : 'opacity-0')}
+                      />
                     </button>
                   </li>
                 )
@@ -190,7 +198,7 @@ function ABRContent() {
             <div className="min-w-0 space-y-6">
               <Card>
                 <CardHeader
-                  icon={<Layers size={18} />}
+                  icon={<Layers size={16} />}
                   title={`${selected.app_name}/${selected.stream_name}`}
                   description="Manual ABR group (HLS)"
                   actions={
@@ -210,18 +218,17 @@ function ABRContent() {
                   }
                 />
                 <DescriptionList>
-                  <DescriptionRow label="Playback URL" hint="HLS master playlist">
-                    <div className="flex min-w-0 items-center gap-2">
+                  <DescriptionRow stacked label="Playback URL" hint="HLS master playlist: give this to players and CDNs.">
+                    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                       <CopyField value={`${origin}${playbackPath(selected)}`} className="min-w-0 flex-1" />
                       <a
                         href={playbackPath(selected)}
                         target="_blank"
                         rel="noreferrer"
-                        className={buttonClass('ghost', 'xs', 'shrink-0')}
-                        title="Open master playlist"
+                        className={buttonClass('secondary', 'sm', 'shrink-0')}
                       >
-                        <ExternalLink size={13} />
-                        Open
+                        <ExternalLink size={14} />
+                        Open playlist
                       </a>
                     </div>
                   </DescriptionRow>
@@ -257,9 +264,15 @@ function ABRContent() {
                 <TableCard
                   header={
                     <div className="flex w-full flex-wrap items-center justify-between gap-2">
-                      <h3 className="text-[15px] font-semibold text-fg">
-                        Variants <span className="font-normal text-fg-muted">({tracks.length})</span>
-                      </h3>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <h3 className="text-[15px] font-semibold text-fg">
+                          Variants <span className="font-normal text-fg-muted">({tracks.length})</span>
+                        </h3>
+                        <StatusBadge
+                          status={liveTracks === tracks.length ? 'online' : liveTracks === 0 ? 'offline' : 'warning'}
+                          label={`${liveTracks} of ${tracks.length} live`}
+                        />
+                      </div>
                       <Button variant="secondary" size="xs" icon={<Pencil size={13} />} onClick={() => openEdit(selected)}>
                         Add / edit variants
                       </Button>
@@ -271,11 +284,11 @@ function ABRContent() {
                     <THead>
                       <tr>
                         <TH>Stream</TH>
-                        <TH>Status</TH>
-                        <TH align="right">Bandwidth</TH>
-                        <TH align="right">Avg</TH>
-                        <TH align="right">Resolution</TH>
-                        <TH>Codecs</TH>
+                        <TH className="w-36">Status</TH>
+                        <TH align="right" className="w-32">Bandwidth</TH>
+                        <TH align="right" className="w-32">Avg bandwidth</TH>
+                        <TH align="right" className="w-32">Resolution</TH>
+                        <TH className="w-48 pl-8">Codecs</TH>
                       </tr>
                     </THead>
                     <TBody>
@@ -299,14 +312,22 @@ function ABRContent() {
                               </div>
                             </TD>
                             <TD>
-                              <StatusBadge status={on ? 'live' : 'idle'} label={on ? 'Live' : 'Offline'} />
+                              {on ? (
+                                <StatusBadge status="live" label="Live" />
+                              ) : (
+                                <Tooltip content="Not publishing: left out of the master playlist until it comes back.">
+                                  <span tabIndex={0} aria-label="Offline: not publishing, left out of the master playlist" className="rounded-full">
+                                    <StatusBadge status="warning" label="Offline" />
+                                  </span>
+                                </Tooltip>
+                              )}
                             </TD>
                             <TD numeric>{v.bandwidth ? formatBitrate(v.bandwidth) : <span className="text-fg-muted">auto</span>}</TD>
                             <TD numeric>{v.avg_bandwidth ? formatBitrate(v.avg_bandwidth) : <span className="text-fg-muted">—</span>}</TD>
                             <TD numeric>
-                              {v.width && v.height ? `${v.width}x${v.height}` : <span className="text-fg-muted">auto</span>}
+                              {v.width && v.height ? `${v.width}×${v.height}` : <span className="text-fg-muted">auto</span>}
                             </TD>
-                            <TD mono>{v.codecs || <span className="text-fg-muted">auto</span>}</TD>
+                            <TD mono className="pl-8">{v.codecs || <span className="font-sans text-fg-muted">auto</span>}</TD>
                           </TR>
                         )
                       })}

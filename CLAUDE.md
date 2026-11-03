@@ -132,7 +132,14 @@ make urls          # prints example ingest/playback URLs
   - `Layout` is the shell: a grouped sidebar (collapsible on desktop, a
     drawer below `lg`), `ToastProvider`, and the live cache banner. It
     already provides padding and `space-y-6`, so pages return a fragment.
-    Fixed-position children need `!mt-0`.
+    Fixed-position children need `!mt-0`. Sidebar: drawer below 768px,
+    icon rail 768–1023px, user-chosen expanded/collapsed from 1024px.
+  - Tooltips use `ui/Tooltip` (hover and keyboard focus, fixed-positioned so
+    table scroll containers don't clip it). It's visual only, so the trigger
+    needs an `aria-label`; IconButton, CopyButton and DropdownMenu handle that.
+  - Charts are `ui/LineChart` (SVG, no dependency). Series colors are
+    `--series-1..3`, validated for color-blind separation and contrast on the
+    card surface. Status colors are never series colors.
   - Inter and JetBrains Mono come from `next/font`, bundled into the static
     export (no runtime font requests).
 - `src/`: legacy empty directory tree, not used.

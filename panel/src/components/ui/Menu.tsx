@@ -4,6 +4,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { MoreHorizontal } from 'lucide-react'
 import { iconButtonClass } from './Button'
+import { Tooltip } from './Tooltip'
 
 export interface MenuItem {
   label: string
@@ -97,13 +98,13 @@ export function DropdownMenu({
 
   return (
     <>
+      <Tooltip content={label} disabled={open}>
       <button
         ref={btn}
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
-        title={label}
         onClick={(e) => {
           e.stopPropagation()
           setOpen((o) => !o)
@@ -112,6 +113,7 @@ export function DropdownMenu({
       >
         {trigger ?? <MoreHorizontal size={15} />}
       </button>
+      </Tooltip>
       {open && (
         <div
           ref={menu}

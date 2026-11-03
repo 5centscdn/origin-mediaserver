@@ -37,6 +37,7 @@ import {
 } from '@/lib/api'
 import { ToastProvider } from './ui/Toast'
 import { StatusDot } from './ui/Status'
+import { Tooltip } from './ui/Tooltip'
 
 interface NavItem {
   href: string
@@ -77,6 +78,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [server, setServer] = useState<ServerEntry | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [drawer, setDrawer] = useState(false)
+  // ≥1024px: the sidebar follows the user's expand/collapse choice.
+  // 768–1023px: always the icon rail. <768px: hidden, opened as a drawer.
+  const [isLg, setIsLg] = useState(true)
+  // Animate the width only for the user's own expand/collapse click; a
+  // breakpoint change (window resize) switches instantly, so the content
+  // never shows mid-animation at the wrong width.
+  const [animate, setAnimate] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const on = () => setIsLg(mq.matches)
+    on()
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
 
   useEffect(() => {
     restoreAuth()
@@ -105,6 +120,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => setDrawer(false), [pathname])
 
   const toggleCollapsed = () => {
+    setAnimate(true)
+    setTimeout(() => setAnimate(false), 250)
     setCollapsed((c) => {
       try {
         localStorage.setItem(COLLAPSE_KEY, c ? '0' : '1')
@@ -161,23 +178,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
             {mini ? (
               gi > 0 && <div className="mx-2 mb-3 h-px bg-border" />
             ) : (
-              <div className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wider text-fg-muted/80">
+              <div className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-fg-muted">
                 {g.group}
               </div>
             )}
-            <ul className="space-y-0.5">
+            <ul className={clsx('space-y-0.5', mini && 'flex flex-col items-center')}>
               {g.items.map((item) => {
                 const active = isActive(item.href)
                 const Icon = item.icon
                 return (
                   <li key={item.href}>
+                    <Tooltip content={item.label} side="right" disabled={!mini}>
                     <Link
                       href={item.href}
-                      title={mini ? item.label : undefined}
+                      aria-label={mini ? item.label : undefined}
                       aria-current={active ? 'page' : undefined}
                       className={clsx(
                         'group relative flex items-center rounded-md text-[13px] font-medium transition-colors',
-                        mini ? 'h-9 justify-center' : 'h-9 gap-3 px-3',
+                        mini ? 'h-9 w-12 justify-center' : 'h-9 w-full gap-3 px-3',
                         active
                           ? 'bg-primary/15 text-fg'
                           : 'text-fg-secondary hover:bg-elevated hover:text-fg',
@@ -187,6 +205,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                       <Icon size={17} className={clsx('shrink-0', active ? 'text-primary-fg' : 'text-fg-muted group-hover:text-fg-secondary')} />
                       {!mini && <span className="truncate">{item.label}</span>}
                     </Link>
+                    </Tooltip>
                   </li>
                 )
               })}
@@ -197,19 +216,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       <div className={clsx('shrink-0 space-y-2 border-t border-border', mini ? 'p-2' : 'p-3')}>
         {mini ? (
-          <div className="flex justify-center py-1" title={server ? `Active server: ${server.name}` : 'Active server: this server'}>
-            <StatusDot status={server ? 'warning' : 'online'} />
+          <div className="flex justify-center py-1">
+            <Tooltip content={server ? `Active server: ${server.name}` : 'Active server: this server'} side="right">
+              <span tabIndex={0} aria-label={server ? `Active server: ${server.name}` : 'Active server: this server'} className="rounded p-1">
+                <StatusDot status={server ? 'warning' : 'online'} />
+              </span>
+            </Tooltip>
           </div>
         ) : (
           <div className="rounded-md border border-border bg-surface px-3 py-2.5">
             <div className="flex items-center gap-2">
               <StatusDot status={server ? 'warning' : 'online'} />
-              <span className="text-[11px] font-medium uppercase tracking-wider text-fg-muted">Active server</span>
+              <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">Active server</span>
             </div>
             <div className="mt-1 truncate text-[13px] font-medium text-fg" title={server?.name}>
               {server ? server.name : 'This server'}
             </div>
-            <div className="truncate font-mono text-[11px] text-fg-muted" title={server?.url}>
+            <div className="truncate font-mono text-xs text-fg-muted" title={server?.url}>
               {server ? server.url : 'local · same origin'}
             </div>
             {server && (
@@ -224,28 +247,37 @@ export function Layout({ children }: { children: React.ReactNode }) {
             )}
           </div>
         )}
-        <div className={clsx('flex gap-1', mini && 'flex-col')}>
-          <button
-            type="button"
-            onClick={onLogout}
-            title="Log out"
-            className={clsx(
-              'flex h-8 items-center justify-center gap-2 rounded-md text-[13px] text-fg-secondary transition-colors hover:bg-elevated hover:text-fg',
-              mini ? 'w-full' : 'flex-1 px-3',
-            )}
-          >
-            <LogOut size={15} />
-            {!mini && 'Log out'}
-          </button>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            title={mini ? 'Expand sidebar' : 'Collapse sidebar'}
-            aria-label={mini ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="hidden h-8 w-full items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-elevated hover:text-fg lg:flex lg:w-8"
-          >
-            {mini ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-          </button>
+        <div className={clsx('flex gap-1', mini && 'flex-col items-center')}>
+          <Tooltip content="Log out" side="right" disabled={!mini}>
+            <button
+              type="button"
+              onClick={onLogout}
+              aria-label={mini ? 'Log out' : undefined}
+              className={clsx(
+                'flex h-8 items-center justify-center gap-2 rounded-md text-[13px] text-fg-secondary transition-colors hover:bg-elevated hover:text-fg',
+                mini ? 'w-12' : 'flex-1 px-3',
+              )}
+            >
+              <LogOut size={15} />
+              {!mini && 'Log out'}
+            </button>
+          </Tooltip>
+          {isLg && (
+            <Tooltip content={mini ? 'Expand sidebar' : 'Collapse sidebar'} side={mini ? 'right' : 'top'}>
+              <button
+                type="button"
+                onClick={toggleCollapsed}
+                aria-label={mini ? 'Expand sidebar' : 'Collapse sidebar'}
+                aria-expanded={!mini}
+                className={clsx(
+                  'flex h-8 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-elevated hover:text-fg',
+                  mini ? 'w-12' : 'w-8',
+                )}
+              >
+                {mini ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+              </button>
+            </Tooltip>
+          )}
         </div>
       </div>
     </div>
@@ -257,16 +289,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/* Desktop sidebar */}
         <aside
           className={clsx(
-            'hidden shrink-0 border-r border-border bg-sidebar transition-[width] duration-200 lg:block',
-            collapsed ? 'w-16' : 'w-[248px]',
+            'hidden shrink-0 border-r border-border bg-sidebar md:block',
+            animate && 'transition-[width] duration-200',
+            !isLg || collapsed ? 'w-16' : 'w-[248px]',
           )}
         >
-          {sidebar(collapsed)}
+          {sidebar(!isLg || collapsed)}
         </aside>
 
         {/* Mobile drawer */}
         {drawer && (
-          <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+          <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
             <div className="absolute inset-0 bg-black/60" onClick={() => setDrawer(false)} />
             <aside className="absolute inset-y-0 left-0 w-[264px] max-w-[85vw] border-r border-border bg-sidebar shadow-pop">
               <button
@@ -284,7 +317,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Mobile top bar */}
-          <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-sidebar px-4 lg:hidden">
+          <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-sidebar px-4 md:hidden">
             <button
               type="button"
               onClick={() => setDrawer(true)}

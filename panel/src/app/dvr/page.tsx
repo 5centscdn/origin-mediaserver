@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import useSWR from 'swr'
-import { HardDrive, Pencil } from 'lucide-react'
+import { HardDrive, Pencil, Link2 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import {
@@ -112,9 +112,10 @@ function DVRContent() {
         description="Time-shifted recording and rewind playback (nDVR) for live streams."
       />
 
-      <Card className="max-w-4xl">
+      <div className="grid items-stretch gap-4 lg:grid-cols-2">
+      <Card className="h-full">
         <CardHeader
-          icon={<HardDrive size={18} />}
+          icon={<HardDrive size={16} />}
           title="DVR configuration"
           description="Global switch records every stream. To record only some, leave it off and enable nDVR per application (Applications page) or per stream config."
           actions={
@@ -149,18 +150,19 @@ function DVRContent() {
         </DescriptionList>
       </Card>
 
-      <Card className="max-w-4xl">
+      <Card className="h-full">
         <CardHeader
+          icon={<Link2 size={16} />}
           title="Rewind URLs"
           description="Append these to the server origin. Use the per-stream copy buttons below for the whole-window URLs."
         />
         <DescriptionList>
-          <DescriptionRow label="Whole window (live)">
+          <DescriptionRow stacked label="Whole window (live)">
             <UrlTemplates
               items={['/<app>/<stream>/playlist_dvr.m3u8', '/<app>/<stream>/manifest_dvr.mpd']}
             />
           </DescriptionRow>
-          <DescriptionRow label="Time range (VOD)">
+          <DescriptionRow stacked label="Time range (VOD)">
             <UrlTemplates
               items={[
                 '/<app>/<stream>/playlist_dvr_range-<unix_from>-<seconds>.m3u8',
@@ -168,7 +170,7 @@ function DVRContent() {
               ]}
             />
           </DescriptionRow>
-          <DescriptionRow label="Delayed live">
+          <DescriptionRow stacked label="Delayed live">
             <UrlTemplates
               items={[
                 '/<app>/<stream>/playlist_dvr_timeshift-<delay_s>[-<depth_s>].m3u8',
@@ -178,6 +180,7 @@ function DVRContent() {
           </DescriptionRow>
         </DescriptionList>
       </Card>
+      </div>
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
@@ -295,13 +298,15 @@ function DVRContent() {
 }
 
 // UrlTemplates lists the HLS and DASH forms of one rewind URL pattern.
+// items: [HLS template, DASH template].
 function UrlTemplates({ items }: { items: string[] }) {
   return (
-    <div className="space-y-1">
-      {items.map((t) => (
-        <code key={t} className="block break-all font-mono text-xs text-fg-secondary">
-          {t}
-        </code>
+    <div className="space-y-1.5">
+      {items.map((t, i) => (
+        <div key={t} className="flex items-start gap-2 rounded-md border border-border bg-canvas/60 px-2.5 py-1.5">
+          <span className="mt-px w-10 shrink-0 text-xs font-semibold text-fg-muted">{i === 0 ? 'HLS' : 'DASH'}</span>
+          <code className="min-w-0 break-all font-mono text-xs leading-5 text-fg-secondary">{t}</code>
+        </div>
       ))}
     </div>
   )

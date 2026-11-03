@@ -140,40 +140,42 @@ function DashboardContent() {
 
       {/* KPIs */}
       {!mon ? (
-        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 xl:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
             <CardSkeleton key={i} />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 xl:grid-cols-5">
           <StatCard
             label="Active streams"
             value={mon.streams.active}
             color="green"
-            icon={<Radio size={18} />}
+            icon={<Radio size={16} />}
             sub={<Link href="/streams" className="hover:text-fg">View live streams →</Link>}
           />
           <StatCard
             label="ABR groups"
             value={groups?.length ?? '—'}
             color="purple"
-            icon={<Layers size={18} />}
-            sub={`${mon.abr_groups_live} with live variants`}
+            icon={<Layers size={16} />}
+            // groups = manual groups (ABR page); abr_groups_live counts the
+            // automatic FMLE %i groups currently publishing, a separate set.
+            sub={mon.abr_groups_live > 0 ? `+ ${mon.abr_groups_live} automatic (%i) live` : 'Manual groups'}
           />
-          <StatCard label="Viewers" value={mon.streams.viewers} color="blue" icon={<Eye size={18} />} sub="HLS/DASH, last 20 s" />
+          <StatCard label="Viewers" value={mon.streams.viewers} color="blue" icon={<Eye size={16} />} sub="HLS/DASH, last 20 s" />
           <StatCard
             label="Bytes received"
             value={formatBytes(mon.totals.bytes_in)}
             color="yellow"
-            icon={<Download size={18} />}
+            icon={<Download size={16} />}
             sub={`${formatBitrate(mon.network.ingest_bps)} ingest now`}
           />
           <StatCard
             label="Stalled streams"
             value={mon.streams.stalled}
             color={mon.streams.stalled > 0 ? 'red' : 'green'}
-            icon={<AlertTriangle size={18} />}
+            icon={<AlertTriangle size={16} />}
             sub={mon.streams.stalled > 0 ? 'No media for over 10 s' : 'All streams receiving media'}
           />
         </div>

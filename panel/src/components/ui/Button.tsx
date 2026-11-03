@@ -3,6 +3,7 @@
 import React from 'react'
 import clsx from 'clsx'
 import { Loader2 } from 'lucide-react'
+import { Tooltip } from './Tooltip'
 
 export type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'destructive' | 'danger-outline'
 export type ButtonSize = 'xs' | 'sm' | 'md'
@@ -71,27 +72,30 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function 
 export interface IconButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   /** Required: shown as the tooltip and read by screen readers. */
   label: string
+  /** Tooltip placement. */
+  tooltipSide?: 'top' | 'right' | 'bottom'
   variant?: ButtonVariant
   size?: ButtonSize
   loading?: boolean
 }
 
-/** Icon-only button. `label` becomes the native tooltip and aria-label. */
+/** Icon-only button. `label` is its aria-label and its tooltip (hover and keyboard focus). */
 export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { label, variant = 'ghost', size = 'sm', loading, className, children, disabled, type = 'button', ...rest },
+  { label, tooltipSide, variant = 'ghost', size = 'sm', loading, className, children, disabled, type = 'button', ...rest },
   ref,
 ) {
   return (
-    <button
-      ref={ref}
-      type={type}
-      title={label}
-      aria-label={label}
-      disabled={disabled || loading}
-      className={iconButtonClass(variant, size, className)}
-      {...rest}
-    >
-      {loading ? <Loader2 size={14} className="animate-spin" /> : children}
-    </button>
+    <Tooltip content={label} side={tooltipSide}>
+      <button
+        ref={ref}
+        type={type}
+        aria-label={label}
+        disabled={disabled || loading}
+        className={iconButtonClass(variant, size, className)}
+        {...rest}
+      >
+        {loading ? <Loader2 size={14} className="animate-spin" /> : children}
+      </button>
+    </Tooltip>
   )
 })

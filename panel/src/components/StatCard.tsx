@@ -30,7 +30,7 @@ export function StatCard({ label, value, sub, icon, color = 'blue' }: StatCardPr
           {sub && <div className="mt-2 text-xs text-fg-muted">{sub}</div>}
         </div>
         {icon && (
-          <div className={clsx('flex h-9 w-9 shrink-0 items-center justify-center rounded-md ring-1', accent[color])}>
+          <div className={clsx('hidden h-9 w-9 shrink-0 items-center justify-center rounded-md ring-1 sm:flex', accent[color])}>
             {icon}
           </div>
         )}

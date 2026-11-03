@@ -4,9 +4,10 @@
 
 /*
  * Design tokens: space-separated RGB channels, consumed by tailwind.config.ts
- * (e.g. bg-surface, text-fg-muted, bg-primary/15). Contrast checked against
- * the surface (#151E2E): fg-secondary 7.2:1, fg-muted 5.0:1, primary-fg
- * 5.6:1; white on primary 5.0:1 and on danger-strong 4.8:1 (WCAG AA).
+ * (e.g. bg-surface, text-fg-muted, bg-primary/15). Contrast against the card
+ * surface (#151E2E): fg-secondary 10.0:1, fg-muted 6.5:1 (4.8:1 even on the
+ * hover/border shade #293548), primary-fg 5.6:1; white on
+ * primary 5.0:1 and on danger-strong 4.8:1 (WCAG AA).
  */
 :root {
   --bg: 11 17 32; /* #0B1120 page */
@@ -17,8 +18,8 @@
   --border-strong: 59 74 97; /* #3B4A61 */
 
   --fg: 241 245 249; /* #F1F5F9 */
-  --fg-secondary: 148 163 184; /* #94A3B8 */
-  --fg-muted: 132 146 168; /* #8492A8 (brief's #718096 is 4.1:1, under AA) */
+  --fg-secondary: 190 201 217; /* #BEC9D9 labels, descriptions, technical values */
+  --fg-muted: 148 163 184; /* #94A3B8 hints, axis labels, timestamps */
 
   --primary: 85 88 232; /* #5558E8 button fill */
   --primary-hover: 99 102 241; /* #6366F1 */
@@ -42,8 +43,8 @@
   --gray-100: 241 245 249;
   --gray-200: 226 232 240;
   --gray-300: 203 213 225;
-  --gray-400: 148 163 184;
-  --gray-500: 132 146 168;
+  --gray-400: 190 201 217;
+  --gray-500: 148 163 184;
   --gray-600: 71 85 105;
   --gray-700: 41 53 72;
   --gray-800: 30 41 59;

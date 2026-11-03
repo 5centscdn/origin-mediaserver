@@ -45,7 +45,7 @@ export default function SettingsPage() {
 function Mono({ value, copy, breakAll }: { value: string; copy?: boolean; breakAll?: boolean }) {
   return (
     <span className="flex min-w-0 items-center gap-1">
-      <code className={'min-w-0 font-mono text-[13px] text-fg-secondary ' + (breakAll ? 'break-all' : 'truncate')} title={value}>
+      <code className={'min-w-0 font-mono text-[13px] text-fg ' + (breakAll ? 'break-all' : 'truncate')} title={value}>
         {value}
       </code>
       {copy && <CopyButton text={value} title="Copy" toastMessage="Copied to clipboard" />}
@@ -67,7 +67,7 @@ function EditButton({ onClick, what }: { onClick: () => void; what: string }) {
 
 function SettingsSkeleton() {
   return (
-    <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2" aria-busy="true" aria-label="Loading">
+    <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2" aria-busy="true" aria-label="Loading">
       {Array.from({ length: 4 }).map((_, i) => (
         <Card key={i}>
           <div className="border-b border-border px-5 py-4">
@@ -111,10 +111,10 @@ function SettingsContent() {
       {isLoading && !node ? (
         <SettingsSkeleton />
       ) : (
-        <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
-          <Card>
+        <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
+          <Card className="h-full">
             <CardHeader
-              icon={<ServerIcon size={18} />}
+              icon={<ServerIcon size={16} />}
               title="Server information"
               description="Identity and storage of this node."
             />
@@ -132,9 +132,9 @@ function SettingsContent() {
             </DescriptionList>
           </Card>
 
-          <Card>
+          <Card className="h-full">
             <CardHeader
-              icon={<MemoryStick size={18} />}
+              icon={<MemoryStick size={16} />}
               title="Live cache"
               description="Where live HLS/DASH segments are kept."
               actions={<EditButton what="live cache" onClick={() => setEditCache(true)} />}
@@ -180,8 +180,8 @@ function SettingsContent() {
             </DescriptionList>
           </Card>
 
-          <Card>
-            <CardHeader icon={<Radio size={18} />} title="RTMP" description="RTMP/RTMPS ingest listener." />
+          <Card className="h-full">
+            <CardHeader icon={<Radio size={16} />} title="RTMP" description="RTMP/RTMPS ingest listener." />
             <DescriptionList>
               <DescriptionRow label="Listen address">
                 <Mono value={node?.rtmp_listen ?? ':1935'} />
@@ -192,8 +192,8 @@ function SettingsContent() {
             </DescriptionList>
           </Card>
 
-          <Card>
-            <CardHeader icon={<Zap size={18} />} title="SRT" description="SRT listener for low-latency contribution." />
+          <Card className="h-full">
+            <CardHeader icon={<Zap size={16} />} title="SRT" description="SRT listener for low-latency contribution." />
             <DescriptionList>
               <DescriptionRow label="Enabled">
                 <OnOff on={srt.enabled} />
@@ -210,9 +210,9 @@ function SettingsContent() {
             </DescriptionList>
           </Card>
 
-          <Card>
+          <Card className="h-full">
             <CardHeader
-              icon={<Globe size={18} />}
+              icon={<Globe size={16} />}
               title="HTTP"
               description="One port for HLS, DASH, WHIP/WHEP, the API and this panel."
             />
@@ -226,8 +226,8 @@ function SettingsContent() {
             </DescriptionList>
           </Card>
 
-          <Card>
-            <CardHeader icon={<ListVideo size={18} />} title="HLS" description="Default segmenting for live playlists." />
+          <Card className="h-full">
+            <CardHeader icon={<ListVideo size={16} />} title="HLS" description="Default segmenting for live playlists." />
             <DescriptionList>
               <DescriptionRow label="Segment duration">
                 <span className="tabular">{hls.segment_duration ? `${hls.segment_duration}s` : '—'}</span>
@@ -238,9 +238,9 @@ function SettingsContent() {
             </DescriptionList>
           </Card>
 
-          <Card>
+          <Card className="h-full">
             <CardHeader
-              icon={<History size={18} />}
+              icon={<History size={16} />}
               title="DVR"
               description="nDVR recording and rewind window."
               actions={<EditButton what="DVR" onClick={() => setEditDVR(true)} />}

@@ -6,6 +6,7 @@ import { Check, Copy } from 'lucide-react'
 import { copyToClipboard } from '@/lib/utils'
 import { buttonClass, iconButtonClass, ButtonSize, ButtonVariant } from './Button'
 import { useToast } from './Toast'
+import { Tooltip } from './Tooltip'
 
 /**
  * Copies `text`, shows a check for 1.5 s and a toast. With `label` it's a
@@ -45,16 +46,20 @@ export function CopyButton({
   const tip = title ?? (typeof label === 'string' ? `Copy ${label} URL` : 'Copy')
   if (!label) {
     return (
-      <button type="button" onClick={onClick} title={tip} aria-label={tip} className={iconButtonClass(variant, size, className)}>
-        {icon}
-      </button>
+      <Tooltip content={done ? 'Copied' : tip}>
+        <button type="button" onClick={onClick} aria-label={tip} className={iconButtonClass(variant, size, className)}>
+          {icon}
+        </button>
+      </Tooltip>
     )
   }
   return (
-    <button type="button" onClick={onClick} title={tip} className={buttonClass(variant, size, clsx(className))}>
-      {icon}
-      {label}
-    </button>
+    <Tooltip content={tip}>
+      <button type="button" onClick={onClick} aria-label={tip} className={buttonClass(variant, size, clsx(className))}>
+        {icon}
+        {label}
+      </button>
+    </Tooltip>
   )
 }
 

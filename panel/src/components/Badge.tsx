@@ -32,7 +32,7 @@ export function Badge({ variant, children, mono, className, title }: BadgeProps)
     <span
       title={title}
       className={clsx(
-        'inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[11px] font-medium leading-4',
+        'inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium leading-4',
         mono && 'font-mono',
         styles[variant],
         className,

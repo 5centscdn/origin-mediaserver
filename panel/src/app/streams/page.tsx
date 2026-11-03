@@ -256,7 +256,7 @@ function StreamsContent() {
                         {s.source_type || 'unknown'}
                       </Badge>
                       {s.source_addr && (
-                        <Truncate mono max="max-w-[180px]" className="text-[11px] text-fg-muted">
+                        <Truncate mono max="max-w-[180px]" className="text-xs text-fg-muted">
                           {s.source_addr}
                         </Truncate>
                       )}
