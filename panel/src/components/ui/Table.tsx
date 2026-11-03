@@ -40,8 +40,19 @@ export function TableCard({
   )
 }
 
-export function Table({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <table className={clsx('w-full border-collapse text-[13px]', className)}>{children}</table>
+export function Table({
+  children,
+  className,
+  dense,
+}: {
+  children: React.ReactNode
+  className?: string
+  /** Tighter cell padding, for wide tables with many columns. */
+  dense?: boolean
+}) {
+  return (
+    <table className={clsx('w-full border-collapse text-[13px]', dense && '[&_td]:px-3 [&_th]:px-3', className)}>{children}</table>
+  )
 }
 
 export function THead({ children }: { children: React.ReactNode }) {

@@ -9,7 +9,7 @@ interface ModalProps {
   onClose: () => void
   title: string
   children: React.ReactNode
-  size?: 'sm' | 'md' | 'lg' | 'xl'
+  size?: 'sm' | 'md' | 'lg' | 'video' | 'xl'
   /** Optional line under the title. */
   description?: React.ReactNode
 }
@@ -18,6 +18,7 @@ const sizes = {
   sm: 'max-w-sm',
   md: 'max-w-md',
   lg: 'max-w-2xl',
+  video: 'max-w-4xl',
   xl: 'max-w-5xl',
 }
 

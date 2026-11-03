@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import clsx from 'clsx'
-import { Plus, Trash2, Pencil, Layers, X, ExternalLink, ListPlus, ChevronRight } from 'lucide-react'
+import { Plus, Trash2, Pencil, Layers, X, ExternalLink, ListPlus, ChevronRight, Play } from 'lucide-react'
+import { usePreview } from '@/components/preview/StreamPreview'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
@@ -78,6 +79,7 @@ function ABRContent() {
   )
   const { data: live } = useSWR('streams', listStreams, { refreshInterval: 5000 })
   const toast = useToast()
+  const preview = usePreview()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [modal, setModal] = useState<{ open: boolean; edit: ABRGroup | null }>({
     open: false,
@@ -203,6 +205,24 @@ function ABRContent() {
                   description="Manual ABR group (HLS)"
                   actions={
                     <>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={<Play size={14} />}
+                        disabled={!tracks}
+                        onClick={() =>
+                          preview.open({
+                            app: selected.app_name,
+                            stream: selected.stream_name,
+                            kind: 'abr',
+                            dash: false, // manual groups are HLS only
+                            live: liveTracks > 0,
+                            context: `ABR group · ${liveTracks} of ${tracks?.length ?? 0} variants live`,
+                          })
+                        }
+                      >
+                        Preview
+                      </Button>
                       <Button variant="secondary" size="sm" icon={<Pencil size={14} />} onClick={() => openEdit(selected)}>
                         Edit
                       </Button>

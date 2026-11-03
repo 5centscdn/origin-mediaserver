@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import useSWR from 'swr'
-import { HardDrive, Pencil, Link2 } from 'lucide-react'
+import { HardDrive, Pencil, Link2, Play } from 'lucide-react'
+import { usePreview } from '@/components/preview/StreamPreview'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import {
@@ -33,6 +34,7 @@ import {
   StatusBadge,
   StatusDot,
   useToast,
+  IconButton,
 } from '@/components/ui'
 import {
   listStreams,
@@ -66,6 +68,7 @@ function DVRContent() {
   })
   const [editConfig, setEditConfig] = useState(false)
   const toast = useToast()
+  const preview = usePreview()
 
   // Fetch DVR info for each stream.
   const { data: rows } = useSWR(
@@ -204,7 +207,7 @@ function DVRContent() {
           </TableCard>
         ) : (
           <TableCard>
-            <Table>
+            <Table dense>
               <THead>
                 <tr>
                   <TH>Stream</TH>
@@ -257,6 +260,27 @@ function DVRContent() {
                       <TD numeric>{dvr ? formatBytes(dvr.total_bytes) : '—'}</TD>
                       <TD align="right">
                         <RowActions>
+                          <IconButton
+                            label={recording ? `Preview recording of ${stream.app}/${stream.name}` : `Preview ${stream.app}/${stream.name} (no DVR data)`}
+                            size="xs"
+                            variant="secondary"
+                            onClick={() =>
+                              preview.open({
+                                app: stream.app,
+                                stream: stream.name,
+                                kind: 'dvr',
+                                live: recording,
+                                codec: stream.codec,
+                                context: 'nDVR recording',
+                                unavailable: {
+                                  title: 'No DVR recording for this stream yet.',
+                                  text: 'Enable nDVR for its application or stream config; rewind becomes available once segments are recorded.',
+                                },
+                              })
+                            }
+                          >
+                            <Play size={13} />
+                          </IconButton>
                           <CopyButton
                             text={rewindURL(stream, 'hls')}
                             label="HLS rewind"

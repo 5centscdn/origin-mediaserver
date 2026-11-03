@@ -121,3 +121,12 @@ export function listenPort(listen: string | undefined, fallback: string): string
   const i = listen.lastIndexOf(':')
   return i >= 0 ? listen.slice(i) : fallback
 }
+
+// redactUrl hides the password in a URL's userinfo for display
+// ("rtsp://admin:secret@cam/1" → "rtsp://admin:***@cam/1"). Pull and
+// failover source URLs can carry camera credentials; tables and tooltips
+// show the redacted form (edit forms still hold the real value).
+export function redactUrl(raw: string): string {
+  if (!raw) return raw
+  return raw.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/@:]*):[^/@]*@/i, '$1$2:***@')
+}

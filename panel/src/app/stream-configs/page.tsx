@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import clsx from 'clsx'
-import { Plus, Pencil, Trash2, Copy, ListVideo, ExternalLink } from 'lucide-react'
+import { Plus, Pencil, Trash2, Copy, ListVideo, ExternalLink, Play } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { ConfirmDelete, inputClass } from '@/components/FormHelpers'
@@ -39,6 +39,7 @@ import {
   getNodeInfo,
 } from '@/lib/api'
 import { copyToClipboard, matchesStreamPattern, listenPort } from '@/lib/utils'
+import { usePreview } from '@/components/preview/StreamPreview'
 
 // Streams: every stream defined under an application, in one list, like the
 // standalone DVR server's Streams page. A stream is created by picking its
@@ -106,6 +107,7 @@ function Segmented<T extends string>({
 
 function StreamConfigsContent() {
   const { data: rows, mutate, isLoading } = useSWR('all-stream-configs', loadAll)
+  const preview = usePreview()
   const { data: live } = useSWR('streams', listStreams, { refreshInterval: 3000 })
   // Same key/interval as the dashboard, so SWR shares the request.
   const { data: node } = useSWR('node', getNodeInfo, { refreshInterval: 30000 })
@@ -332,12 +334,30 @@ function StreamConfigsContent() {
                     </TD>
                     <TD align="right">
                       <RowActions>
+                        <IconButton
+                          label={l.length ? `Preview ${l[0].app}/${l[0].name}` : `Preview ${name} (offline)`}
+                          size="xs"
+                          variant="secondary"
+                          onClick={() =>
+                            l.length
+                              ? preview.open({ app: l[0].app, stream: l[0].name, codec: l[0].codec, bitrateBps: l[0].bitrate_bps })
+                              : preview.open({ app: r.app.name, stream: r.cfg.name_pattern, live: false })
+                          }
+                        >
+                          <Play size={13} />
+                        </IconButton>
                         <IconButton label={`Edit ${name}`} size="xs" onClick={() => setModal({ open: true, edit: r })}>
                           <Pencil size={14} />
                         </IconButton>
                         <DropdownMenu
                           label={`More actions for ${name}`}
                           items={[
+                            // Pattern rows: preview any other live match.
+                            ...l.slice(1, 6).map((m) => ({
+                              label: `Preview ${m.name}`,
+                              icon: <Play size={14} />,
+                              onClick: () => preview.open({ app: m.app, stream: m.name, codec: m.codec, bitrateBps: m.bitrate_bps }),
+                            })),
                             ...(r.cfg.is_wildcard
                               ? []
                               : [
@@ -362,7 +382,7 @@ function StreamConfigsContent() {
                               label: 'Delete stream',
                               icon: <Trash2 size={14} />,
                               danger: true,
-                              separator: !r.cfg.is_wildcard,
+                              separator: !r.cfg.is_wildcard || l.length > 1,
                               onClick: () => setDel(r),
                             },
                           ]}

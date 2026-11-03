@@ -79,6 +79,10 @@ func (c CodecType) String() string {
 		return "speex"
 	case CodecMP2:
 		return "mp2"
+	case CodecPCMA:
+		return "pcma" // G.711 A-law (RTSP cameras)
+	case CodecPCMU:
+		return "pcmu" // G.711 μ-law
 	case CodecSCTE35:
 		return "scte35"
 	case CodecDVBTeletext:

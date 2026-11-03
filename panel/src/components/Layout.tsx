@@ -11,7 +11,6 @@ import {
   ShieldAlert,
   Download,
   Users,
-  Server,
   Settings,
   LogOut,
   AppWindow,
@@ -21,7 +20,6 @@ import {
   X,
   PanelLeftClose,
   PanelLeftOpen,
-  Undo2,
   type LucideIcon,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -30,12 +28,10 @@ import {
   restoreAuth,
   getToken,
   logout,
-  getActiveServer,
-  setActiveServer,
-  ServerEntry,
   getNodeInfo,
 } from '@/lib/api'
 import { ToastProvider } from './ui/Toast'
+import { PreviewProvider } from './preview/StreamPreview'
 import { StatusDot } from './ui/Status'
 import { Tooltip } from './ui/Tooltip'
 
@@ -45,21 +41,23 @@ interface NavItem {
   icon: LucideIcon
 }
 
+// Ordered by an operator's workflow: watch what's live, then the config
+// hierarchy (application → stream → ABR), then ingest and recording.
+// Single-node release: no Servers/cluster section yet.
 const NAV: { group: string; items: NavItem[] }[] = [
   { group: 'Overview', items: [{ href: '/', label: 'Dashboard', icon: LayoutDashboard }] },
   {
     group: 'Streaming',
     items: [
+      { href: '/streams', label: 'Live Streams', icon: Radio },
       { href: '/applications', label: 'Applications', icon: AppWindow },
       { href: '/stream-configs', label: 'Streams', icon: ListVideo },
-      { href: '/streams', label: 'Live Streams', icon: Radio },
       { href: '/abr', label: 'ABR Groups', icon: Layers },
-      { href: '/dvr', label: 'DVR', icon: HardDrive },
-      { href: '/failover', label: 'Failover', icon: ShieldAlert },
       { href: '/pull', label: 'Pull Sources', icon: Download },
+      { href: '/failover', label: 'Failover', icon: ShieldAlert },
+      { href: '/dvr', label: 'DVR', icon: HardDrive },
     ],
   },
-  { group: 'Infrastructure', items: [{ href: '/servers', label: 'Servers', icon: Server }] },
   {
     group: 'Administration',
     items: [
@@ -75,7 +73,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname() ?? '/'
   const [ready, setReady] = useState(false)
-  const [server, setServer] = useState<ServerEntry | null>(null)
+  // Local node identity and health for the sidebar card: the same request
+  // (and SWR key) as the live cache banner, so no extra polling.
+  const { data: node, error: nodeErr } = useSWR(ready ? 'node' : null, getNodeInfo, { refreshInterval: 15000 })
+  const nodeUp = !!node && !nodeErr
   const [collapsed, setCollapsed] = useState(false)
   const [drawer, setDrawer] = useState(false)
   // ≥1024px: the sidebar follows the user's expand/collapse choice.
@@ -100,19 +101,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
       router.replace('/login')
       return
     }
-    setServer(getActiveServer())
     try {
       setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')
     } catch {}
     setReady(true)
-    // React to server switches from other tabs / pages.
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'activeServer' || e.key === 'activeServerUrl') {
-        setServer(getActiveServer())
-      }
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -133,12 +125,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const onLogout = async () => {
     await logout()
     router.replace('/login')
-  }
-
-  const onResetServer = () => {
-    setActiveServer(null)
-    setServer(null)
-    window.location.reload()
   }
 
   if (!ready) {
@@ -217,34 +203,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className={clsx('shrink-0 space-y-2 border-t border-border', mini ? 'p-2' : 'p-3')}>
         {mini ? (
           <div className="flex justify-center py-1">
-            <Tooltip content={server ? `Active server: ${server.name}` : 'Active server: this server'} side="right">
-              <span tabIndex={0} aria-label={server ? `Active server: ${server.name}` : 'Active server: this server'} className="rounded p-1">
-                <StatusDot status={server ? 'warning' : 'online'} />
+            <Tooltip content={nodeUp ? `${node!.node_name}: online` : 'Server unreachable'} side="right">
+              <span tabIndex={0} aria-label={nodeUp ? `${node!.node_name}: online` : 'Server unreachable'} className="rounded p-1">
+                <StatusDot status={nodeUp ? 'online' : node || nodeErr ? 'offline' : 'idle'} />
               </span>
             </Tooltip>
           </div>
         ) : (
           <div className="rounded-md border border-border bg-surface px-3 py-2.5">
             <div className="flex items-center gap-2">
-              <StatusDot status={server ? 'warning' : 'online'} />
-              <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">Active server</span>
+              <StatusDot status={nodeUp ? 'online' : node || nodeErr ? 'offline' : 'idle'} />
+              <span className="text-xs font-medium uppercase tracking-wider text-fg-muted">
+                {nodeUp ? 'Online' : nodeErr ? 'Unreachable' : 'Connecting…'}
+              </span>
             </div>
-            <div className="mt-1 truncate text-[13px] font-medium text-fg" title={server?.name}>
-              {server ? server.name : 'This server'}
+            <div className="mt-1 truncate text-[13px] font-medium text-fg" title={node?.node_name}>
+              {node?.node_name ?? 'This server'}
             </div>
-            <div className="truncate font-mono text-xs text-fg-muted" title={server?.url}>
-              {server ? server.url : 'local · same origin'}
-            </div>
-            {server && (
-              <button
-                type="button"
-                onClick={onResetServer}
-                className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary-fg hover:text-fg"
-              >
-                <Undo2 size={12} />
-                Switch back to local
-              </button>
-            )}
+            <div className="truncate font-mono text-xs text-fg-muted">v{node?.version ?? '—'} · single node</div>
           </div>
         )}
         <div className={clsx('flex gap-1', mini && 'flex-col items-center')}>
@@ -285,6 +261,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastProvider>
+      <PreviewProvider>
       <div className="flex h-screen overflow-hidden bg-canvas text-fg">
         {/* Desktop sidebar */}
         <aside
@@ -339,6 +316,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </main>
         </div>
       </div>
+      </PreviewProvider>
     </ToastProvider>
   )
 }

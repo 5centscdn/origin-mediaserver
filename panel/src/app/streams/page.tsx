@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
-import { Radio, ExternalLink, RefreshCw, Copy, Power, Check } from 'lucide-react'
+import { Radio, ExternalLink, RefreshCw, Copy, Power, Check, Play } from 'lucide-react'
+import Link from 'next/link'
+import { usePreview } from '@/components/preview/StreamPreview'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
 import { ConfirmDelete } from '@/components/FormHelpers'
@@ -27,7 +29,7 @@ import {
   useToast,
 } from '@/components/ui'
 import { listStreams, kickStream, reloadStream, Stream } from '@/lib/api'
-import { formatBytes, formatUptime, formatBitrate, copyToClipboard } from '@/lib/utils'
+import { formatBytes, formatUptime, formatBitrate, copyToClipboard, redactUrl } from '@/lib/utils'
 
 type SortKey = 'name' | 'app' | 'source' | 'uptime' | 'viewers' | 'bitrate' | 'bytes' | 'codec'
 type SortState = { key: SortKey; dir: 'asc' | 'desc' }
@@ -90,6 +92,7 @@ function StreamsContent() {
     refreshInterval: 3000,
   })
   const toast = useToast()
+  const preview = usePreview()
   const [kickTarget, setKickTarget] = useState<Stream | null>(null)
   const [reloadingId, setReloadingId] = useState<string | null>(null)
   const [reloadedId, setReloadedId] = useState<string | null>(null)
@@ -216,11 +219,11 @@ function StreamsContent() {
             </>
           }
         >
-          <Table>
+          <Table dense>
             <THead>
               <tr>
+                <TH {...sortProps('app')}>Application</TH>
                 <TH {...sortProps('name')}>Stream</TH>
-                <TH {...sortProps('app')}>App</TH>
                 <TH {...sortProps('source')}>Source</TH>
                 <TH {...sortProps('codec')}>Codec</TH>
                 <TH align="right" {...sortProps('uptime')}>Uptime</TH>
@@ -243,21 +246,25 @@ function StreamsContent() {
               {streams.map((s) => (
                 <TR key={s.id}>
                   <TD>
+                    <Link href="/applications" className="text-fg-secondary hover:text-primary-fg hover:underline">
+                      {s.app}
+                    </Link>
+                  </TD>
+                  <TD>
                     <div className="flex items-center gap-2.5">
                       <StatusDot status="live" />
                       <span className="font-medium text-fg">{s.name}</span>
                       <span className="sr-only">live</span>
                     </div>
                   </TD>
-                  <TD>{s.app}</TD>
                   <TD>
                     <div className="flex flex-col items-start gap-1">
                       <Badge variant={sourceVariant(s.source_type || '')} mono>
                         {s.source_type || 'unknown'}
                       </Badge>
                       {s.source_addr && (
-                        <Truncate mono max="max-w-[180px]" className="text-xs text-fg-muted">
-                          {s.source_addr}
+                        <Truncate mono max="max-w-[170px]" className="text-xs text-fg-muted">
+                          {redactUrl(s.source_addr)}
                         </Truncate>
                       )}
                     </div>
@@ -271,6 +278,16 @@ function StreamsContent() {
                   <TD numeric>{formatBytes(s.bytes_in)}</TD>
                   <TD align="right">
                     <RowActions>
+                      <IconButton
+                        label={`Preview ${s.app}/${s.name}`}
+                        size="xs"
+                        variant="secondary"
+                        onClick={() =>
+                          preview.open({ app: s.app, stream: s.name, codec: s.codec, bitrateBps: s.bitrate_bps, context: s.source_type })
+                        }
+                      >
+                        <Play size={13} />
+                      </IconButton>
                       <CopyButton text={hlsURL(s)} label="HLS" variant="secondary" toastMessage="HLS URL copied" />
                       <CopyButton
                         text={dashURL(s)}

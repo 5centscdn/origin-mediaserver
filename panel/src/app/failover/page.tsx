@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { Plus, Trash2, Pencil, Zap, ShieldAlert } from 'lucide-react'
+import { redactUrl } from '@/lib/utils'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge, BadgeVariant } from '@/components/Badge'
@@ -150,7 +151,7 @@ function FailoverContent() {
           <Table>
             <THead>
               <tr>
-                <TH {...sortProps('app')}>App</TH>
+                <TH {...sortProps('app')}>Application</TH>
                 <TH {...sortProps('primary')}>Primary</TH>
                 <TH>Backup URL</TH>
                 <TH {...sortProps('protocol')}>Protocol</TH>
@@ -173,7 +174,7 @@ function FailoverContent() {
                     </TD>
                     <TD>
                       <Truncate mono max="max-w-[260px]">
-                        {r.backup_url}
+                        {redactUrl(r.backup_url)}
                       </Truncate>
                     </TD>
                     <TD>

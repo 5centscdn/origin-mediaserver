@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { Plus, Trash2, Pencil, Play, Square, Download, Lock, X } from 'lucide-react'
+import { redactUrl } from '@/lib/utils'
+import { usePreview } from '@/components/preview/StreamPreview'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
@@ -44,6 +46,7 @@ import {
   startPull,
   stopPull,
   PullSource,
+  listStreams,
 } from '@/lib/api'
 
 export default function PullPage() {
@@ -89,6 +92,12 @@ function sortValue(s: PullSource, key: SortKey): string {
 }
 
 function PullContent() {
+  const preview = usePreview()
+  // Live streams, to know which destinations are actually receiving
+  // (preview only those). Same SWR key as Live Streams.
+  const { data: liveList } = useSWR('streams', listStreams, { refreshInterval: 5000 })
+  const liveByKey = useMemo(() => new Map((liveList ?? []).map((x) => [`${x.app}/${x.name}`, x])), [liveList])
+  const liveKeys = liveByKey
   const { data, mutate, isLoading } = useSWR('pull-sources', listPullSources, {
     refreshInterval: 5000,
   })
@@ -156,11 +165,11 @@ function PullContent() {
         </TableCard>
       ) : (
         <TableCard>
-          <Table>
+          <Table dense>
             <THead>
               <tr>
+                <TH {...sortProps('app')}>Application</TH>
                 <TH {...sortProps('stream')}>Stream</TH>
-                <TH {...sortProps('app')}>App</TH>
                 <TH>Source URL</TH>
                 <TH {...sortProps('protocol')}>Protocol</TH>
                 <TH align="right">Fallbacks</TH>
@@ -178,23 +187,23 @@ function PullContent() {
                 const nFallback = s.fallback_urls?.length ?? 0
                 return (
                   <TR key={s.id}>
+                    <TD>{s.app_name}</TD>
                     <TD>
                       <div className="flex items-center gap-2.5">
                         <StatusDot status={isActive ? (fallback ? 'warning' : 'live') : 'idle'} />
                         <span className="font-medium text-fg">{s.stream_name}</span>
                       </div>
                     </TD>
-                    <TD>{s.app_name}</TD>
                     <TD>
                       <div className="flex flex-col gap-0.5">
-                        <Truncate mono max="max-w-[300px]" className="text-fg-secondary">
-                          {s.url}
+                        <Truncate mono max="max-w-[260px]" className="text-fg-secondary">
+                          {redactUrl(s.url)}
                         </Truncate>
                         {fallback && (
                           <span className="flex min-w-0 items-center gap-1 text-xs text-warning">
                             <span className="shrink-0">via</span>
-                            <Truncate mono max="max-w-[270px]">
-                              {s.active_url!}
+                            <Truncate mono max="max-w-[230px]">
+                              {redactUrl(s.active_url!)}
                             </Truncate>
                           </span>
                         )}
@@ -227,7 +236,7 @@ function PullContent() {
                           />
                         )}
                         {fallback && (
-                          <span title={`Running from fallback ${s.active_url}`}>
+                          <span title={`Running from fallback ${redactUrl(s.active_url ?? '')}`}>
                             <StatusBadge status="warning" label="On fallback" />
                           </span>
                         )}
@@ -236,6 +245,29 @@ function PullContent() {
                     <TD className="whitespace-nowrap">{s.on_demand ? 'On demand' : 'Always on'}</TD>
                     <TD align="right">
                       <RowActions>
+                        <IconButton
+                          label={
+                            liveKeys.has(`${s.app_name}/${s.stream_name}`)
+                              ? `Preview ${s.app_name}/${s.stream_name}`
+                              : `Preview ${s.app_name}/${s.stream_name} (not receiving)`
+                          }
+                          size="xs"
+                          variant="secondary"
+                          onClick={() => {
+                            const st = liveByKey.get(`${s.app_name}/${s.stream_name}`)
+                            // The destination stream's own HLS/DASH output, never the source URL.
+                            preview.open({
+                              app: s.app_name,
+                              stream: s.stream_name,
+                              live: !!st,
+                              codec: st?.codec,
+                              bitrateBps: st?.bitrate_bps,
+                              context: `Pull source · ${protocolLabel(s.protocol)}`,
+                            })
+                          }}
+                        >
+                          <Play size={13} />
+                        </IconButton>
                         {isActive ? (
                           <Button
                             size="xs"

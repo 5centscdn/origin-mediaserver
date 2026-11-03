@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ func streamToResponse(s *media.Stream) streamResponse {
 		App:        s.Key.App,
 		Name:       s.Key.Name,
 		SourceType: s.SourceType,
-		SourceAddr: s.SourceAddr,
+		SourceAddr: redactURL(s.SourceAddr),
 		ABRGroup:   s.ABRGroup,
 		StartedAt:  s.StartedAt,
 		UptimeS:    int64(time.Since(s.StartedAt).Seconds()),
@@ -57,6 +58,22 @@ func streamToResponse(s *media.Stream) streamResponse {
 		Subscribers: s.Viewers.Count(),
 		Codec:       codecSummary(s.Bus.CodecInfo()),
 	}
+}
+
+// redactURL hides the password in a URL's userinfo ("rtsp://admin:secret@cam"
+// → "rtsp://admin:***@cam"), so a pull source's credentials never reach the
+// live streams list. Anything that isn't a URL with a password is returned
+// unchanged.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, has := u.User.Password(); !has {
+		return raw
+	}
+	u.User = url.UserPassword(u.User.Username(), "***")
+	return strings.Replace(u.String(), "%2A%2A%2A", "***", 1)
 }
 
 // codecSummary renders a short human-readable "video/audio" codec label

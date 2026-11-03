@@ -69,6 +69,10 @@ func TestRoles(t *testing.T) {
 		{"v", "viewer", "POST", "/api/v1/applications", newApp("a1"), 403},
 		{"o", "operator", "POST", "/api/v1/applications", newApp("a2"), 201},
 		{"v", "viewer", "PUT", "/api/v1/dvr-config", map[string]any{"enabled": true}, 403},
+		// Saved server list: admin only (no panel page; kept for clustering).
+		{"v", "viewer", "GET", "/api/v1/servers", nil, 403},
+		{"o", "operator", "POST", "/api/v1/servers", map[string]any{"name": "x", "url": "http://x"}, 403},
+		{"a", "admin", "GET", "/api/v1/servers", nil, 200},
 		// Users: admin only — including a viewer editing its own record.
 		{"v", "viewer", "GET", "/api/v1/users", nil, 403},
 		{"v", "viewer", "POST", "/api/v1/users", newUser("x@example.com"), 403},

@@ -1,18 +1,19 @@
 // Complete typed API client for the Origin Media Server.
 //
-// The default API base is `/api/v1` (same-origin, when the panel is served
-// from the Go binary). When the user switches the "active server" in the
-// panel UI, all calls go to `${activeServerUrl}/api/v1` instead. The active
-// server URL persists in localStorage as `activeServerUrl`.
+// Single-node: every call goes to this server's own `/api/v1` (same origin as
+// the panel, which the Go binary serves). There is no server switching; the
+// planned Cluster Management feature will add multi-node access.
 
 let accessToken: string | null = null
 let refreshToken: string | null = null
-let activeServerUrl: string | null = null
 
 const LS_ACCESS = 'access_token'
 const LS_REFRESH = 'refresh_token'
 const LS_ROLE = 'role'
-const LS_ACTIVE = 'activeServerUrl'
+// Keys left by the removed server-switching feature; cleared on startup so
+// an old browser session can't keep pointing the panel (and its token) at
+// another server.
+const LEGACY_KEYS = ['activeServerUrl', 'activeServer']
 
 // ---------- Token / auth state ----------
 
@@ -43,8 +44,7 @@ export function restoreAuth(): void {
   const r = localStorage.getItem(LS_REFRESH)
   if (t) accessToken = t
   if (r) refreshToken = r
-  const a = localStorage.getItem(LS_ACTIVE)
-  if (a) activeServerUrl = a
+  for (const k of LEGACY_KEYS) localStorage.removeItem(k)
 }
 
 export function getRole(): string | null {
@@ -52,52 +52,7 @@ export function getRole(): string | null {
   return localStorage.getItem(LS_ROLE)
 }
 
-// ---------- Active server (multi-server) ----------
-
-export interface ServerEntry {
-  id: string
-  name: string
-  url: string
-  note: string
-  created_at: string
-  is_local?: boolean
-}
-
-export function getActiveServer(): ServerEntry | null {
-  if (typeof window === 'undefined') return null
-  const raw = localStorage.getItem('activeServer')
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as ServerEntry
-  } catch {
-    return null
-  }
-}
-
-export function setActiveServer(s: ServerEntry | null): void {
-  if (typeof window === 'undefined') return
-  if (!s || s.is_local || !s.url) {
-    activeServerUrl = null
-    localStorage.removeItem(LS_ACTIVE)
-    localStorage.removeItem('activeServer')
-    return
-  }
-  // Strip trailing slash.
-  activeServerUrl = s.url.replace(/\/+$/, '')
-  localStorage.setItem(LS_ACTIVE, activeServerUrl)
-  localStorage.setItem('activeServer', JSON.stringify(s))
-}
-
 function baseUrl(): string {
-  // Re-read each call so a fresh switch is picked up immediately.
-  if (typeof window !== 'undefined') {
-    const a = localStorage.getItem(LS_ACTIVE)
-    if (a) {
-      activeServerUrl = a.replace(/\/+$/, '')
-      return `${activeServerUrl}/api/v1`
-    }
-    activeServerUrl = null
-  }
   return '/api/v1'
 }
 
@@ -171,50 +126,6 @@ export async function logout(): Promise<void> {
     // Even if the server call fails, drop local state.
   }
   clearAuth()
-}
-
-// ---------- Servers ----------
-
-export async function listServers(): Promise<ServerEntry[]> {
-  try {
-    return await apiFetch<ServerEntry[]>('/servers')
-  } catch (err: any) {
-    if (err?.message === 'unauthorized') throw err
-    // The endpoint may not exist on older servers — return local-only.
-    return []
-  }
-}
-
-export async function addServer(data: {
-  name: string
-  url: string
-  note: string
-}): Promise<ServerEntry> {
-  return apiFetch<ServerEntry>('/servers', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
-}
-
-export async function deleteServer(id: string): Promise<void> {
-  await apiFetch<void>(`/servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
-}
-
-// Ping a server by absolute URL to see if it's reachable.
-export async function pingServer(
-  url: string,
-): Promise<{ ok: boolean; info?: NodeInfo }> {
-  const u = url.replace(/\/+$/, '')
-  try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
-    const res = await fetch(`${u}/api/v1/node`, { headers })
-    if (!res.ok) return { ok: false }
-    const info = (await res.json()) as NodeInfo
-    return { ok: true, info }
-  } catch {
-    return { ok: false }
-  }
 }
 
 // ---------- Streams ----------
