@@ -1,38 +1,42 @@
 'use client'
 
 import React from 'react'
+import clsx from 'clsx'
 
-export type BadgeVariant =
-  | 'green'
-  | 'red'
-  | 'yellow'
-  | 'blue'
-  | 'gray'
-  | 'orange'
-  | 'purple'
+// Variant names are kept for existing call sites; they map onto the
+// semantic palette: green = success, red = danger, yellow/orange = warning,
+// blue = info, purple = primary accent, gray = neutral.
+export type BadgeVariant = 'green' | 'red' | 'yellow' | 'blue' | 'gray' | 'orange' | 'purple'
 
 interface BadgeProps {
   variant: BadgeVariant
   children: React.ReactNode
+  /** Monospace text, for protocol / codec names. */
+  mono?: boolean
+  className?: string
+  title?: string
 }
 
 const styles: Record<BadgeVariant, string> = {
-  green: 'bg-green-500/20 text-green-400 border-green-500/40',
-  red: 'bg-red-500/20 text-red-400 border-red-500/40',
-  yellow: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40',
-  blue: 'bg-blue-500/20 text-blue-400 border-blue-500/40',
-  gray: 'bg-gray-700/40 text-gray-300 border-gray-600/40',
-  orange: 'bg-orange-500/20 text-orange-400 border-orange-500/40',
-  purple: 'bg-purple-500/20 text-purple-400 border-purple-500/40',
+  green: 'bg-success/10 text-success border-success/30',
+  red: 'bg-danger/10 text-danger border-danger/30',
+  yellow: 'bg-warning/10 text-warning border-warning/30',
+  orange: 'bg-warning/10 text-warning border-warning/30',
+  blue: 'bg-info/10 text-info border-info/30',
+  purple: 'bg-primary/15 text-primary-fg border-primary/35',
+  gray: 'bg-elevated text-fg-secondary border-border',
 }
 
-export function Badge({ variant, children }: BadgeProps) {
+export function Badge({ variant, children, mono, className, title }: BadgeProps) {
   return (
     <span
-      className={
-        'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border ' +
-        styles[variant]
-      }
+      title={title}
+      className={clsx(
+        'inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[11px] font-medium leading-4',
+        mono && 'font-mono',
+        styles[variant],
+        className,
+      )}
     >
       {children}
     </span>

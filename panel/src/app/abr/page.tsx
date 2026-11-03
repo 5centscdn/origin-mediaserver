@@ -1,19 +1,44 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import useSWR from 'swr'
-import { Plus, Trash2, Pencil, Layers, Copy, Check, X } from 'lucide-react'
+import clsx from 'clsx'
+import { Plus, Trash2, Pencil, Layers, X, ExternalLink, ListPlus } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
 import {
   FormField,
   inputClass,
+  checkboxClass,
   ModalActions,
   ErrorBox,
   ConfirmDelete,
   useStateReset,
 } from '@/components/FormHelpers'
+import {
+  PageHeader,
+  Card,
+  CardHeader,
+  DescriptionList,
+  DescriptionRow,
+  TableCard,
+  Table,
+  THead,
+  TH,
+  TBody,
+  TR,
+  TD,
+  Button,
+  IconButton,
+  CopyField,
+  EmptyState,
+  Skeleton,
+  TableSkeleton,
+  StatusBadge,
+  buttonClass,
+  useToast,
+} from '@/components/ui'
 import {
   listABRGroups,
   createABRGroup,
@@ -28,7 +53,7 @@ import {
   ABRTrack,
   ABRVariant,
 } from '@/lib/api'
-import { formatBitrate, copyToClipboard, isStreamPattern, matchesStreamPattern } from '@/lib/utils'
+import { formatBitrate, isStreamPattern, matchesStreamPattern } from '@/lib/utils'
 
 // ABR groups follow the standalone DVR server's editor: a group is an app
 // plus a name (served at /{app}/{name}/playlist.m3u8) and an ordered list of
@@ -45,21 +70,26 @@ export default function ABRPage() {
 }
 
 function ABRContent() {
-  const { data: groups, mutate: refreshGroups } = useSWR(
+  const { data: groups, mutate: refreshGroups, isLoading } = useSWR(
     'abr-groups',
     listABRGroups,
     { refreshInterval: 10000 },
   )
   const { data: live } = useSWR('streams', listStreams, { refreshInterval: 5000 })
+  const toast = useToast()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [modal, setModal] = useState<{ open: boolean; edit: ABRGroup | null }>({
     open: false,
     edit: null,
   })
   const [deleteTarget, setDeleteTarget] = useState<ABRGroup | null>(null)
-  const [copied, setCopied] = useState(false)
 
   const selected = (groups ?? []).find((g) => g.id === selectedId) ?? null
+  // Open the first group by default (and after the selected one is deleted)
+  // instead of an empty detail pane.
+  useEffect(() => {
+    if (!selected && groups && groups.length > 0) setSelectedId(groups[0].id)
+  }, [groups, selected])
 
   const { data: tracks, mutate: refreshTracks } = useSWR(
     selected ? ['abr-variants', selected.id] : null,
@@ -71,205 +101,243 @@ function ABRContent() {
   const isLive = (app: string, stream: string) =>
     (live ?? []).some((s) => s.app === app && matchesStreamPattern(stream, s.name))
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const playbackPath = (g: ABRGroup) => `/${g.app_name}/${g.stream_name}/playlist.m3u8`
 
-  const copyURL = async () => {
-    if (!selected) return
-    const url = `${window.location.origin}/${selected.app_name}/${selected.stream_name}/playlist.m3u8`
-    if (await copyToClipboard(url)) {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    }
-  }
+  const openCreate = () => setModal({ open: true, edit: null })
+  const openEdit = (g: ABRGroup) => setModal({ open: true, edit: g })
+
+  const liveTracks = (tracks ?? []).filter((v) =>
+    selected ? isLive(v.src_app_name || selected.app_name, v.stream_name) : false,
+  ).length
 
   return (
-    <div className="space-y-6 max-w-7xl">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">ABR Groups</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Combine streams into one multi-bitrate HLS master playlist
-        </p>
-      </div>
+    <>
+      <PageHeader
+        title="ABR Groups"
+        description="Combine streams into one multi-bitrate HLS master playlist."
+        actions={
+          <Button variant="primary" size="md" icon={<Plus size={16} />} onClick={openCreate}>
+            New ABR Group
+          </Button>
+        }
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Groups
-            </h2>
-            <button
-              type="button"
-              onClick={() => setModal({ open: true, edit: null })}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-            >
-              <Plus size={14} />
-              New
-            </button>
-          </div>
-
-          {!groups || groups.length === 0 ? (
-            <div className="rounded-lg border border-gray-800 bg-gray-900 p-6 text-center">
-              <Layers className="mx-auto text-gray-600 mb-2" size={24} />
-              <div className="text-sm text-gray-400">No ABR groups</div>
-              <div className="text-xs text-gray-500 mt-1">
-                Streams published as name%i (FMLE) are grouped automatically
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {groups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => setSelectedId(g.id)}
-                  className={
-                    'w-full text-left rounded-lg border px-3 py-2.5 transition ' +
-                    (selectedId === g.id
-                      ? 'border-blue-500 bg-blue-500/10'
-                      : 'border-gray-800 bg-gray-900 hover:border-gray-700')
-                  }
-                >
-                  <div className="text-sm font-medium text-white truncate">
-                    {g.app_name}/{g.stream_name}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+      {isLoading ? (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
+          <Card className="space-y-2 p-3">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+          </Card>
+          <TableSkeleton rows={3} cols={5} />
         </div>
+      ) : !groups || groups.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={<Layers size={20} />}
+            title="No ABR groups"
+            description="Create a group to combine renditions into one master playlist. Streams published as name%i (FMLE) are grouped automatically."
+            action={
+              <Button variant="primary" size="md" icon={<Plus size={16} />} onClick={openCreate}>
+                New ABR Group
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
+          {/* Group list */}
+          <Card className="overflow-hidden">
+            <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <h2 className="text-[15px] font-semibold text-fg">
+                Groups <span className="font-normal text-fg-muted">({groups.length})</span>
+              </h2>
+              <Button variant="secondary" size="xs" icon={<Plus size={13} />} onClick={openCreate}>
+                New
+              </Button>
+            </div>
+            <ul className="divide-y divide-border">
+              {groups.map((g) => {
+                const active = selectedId === g.id
+                return (
+                  <li key={g.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(g.id)}
+                      aria-current={active ? 'true' : undefined}
+                      className={clsx(
+                        'block w-full border-l-2 px-4 py-2.5 text-left transition-colors',
+                        'focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary-fg',
+                        active ? 'border-primary bg-primary/10' : 'border-transparent hover:bg-elevated/60',
+                      )}
+                    >
+                      <div className={clsx('truncate text-sm font-medium', active ? 'text-fg' : 'text-fg-secondary')}>
+                        {g.stream_name}
+                      </div>
+                      <div className="truncate font-mono text-xs text-fg-muted">
+                        {g.app_name}/{g.stream_name}
+                      </div>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </Card>
 
-        <div className="lg:col-span-2">
+          {/* Detail */}
           {selected ? (
-            <div className="space-y-4">
-              <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h2 className="text-base font-semibold text-white truncate">
-                      {selected.app_name}/{selected.stream_name}
-                    </h2>
-                    <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      <span className="text-xs text-gray-500">Live URL:</span>
-                      <code className="text-xs text-gray-300 font-mono bg-gray-800 px-2 py-0.5 rounded break-all">
-                        /{selected.app_name}/{selected.stream_name}/playlist.m3u8
-                      </code>
-                      <button
-                        type="button"
-                        onClick={copyURL}
-                        className="text-gray-400 hover:text-white transition"
-                        title="Copy"
+            <div className="min-w-0 space-y-6">
+              <Card>
+                <CardHeader
+                  icon={<Layers size={18} />}
+                  title={`${selected.app_name}/${selected.stream_name}`}
+                  description="Manual ABR group (HLS)"
+                  actions={
+                    <>
+                      <Button variant="secondary" size="sm" icon={<Pencil size={14} />} onClick={() => openEdit(selected)}>
+                        Edit
+                      </Button>
+                      <Button
+                        variant="danger-outline"
+                        size="sm"
+                        icon={<Trash2 size={14} />}
+                        onClick={() => setDeleteTarget(selected)}
                       >
-                        {copied ? (
-                          <Check size={14} className="text-green-400" />
-                        ) : (
-                          <Copy size={14} />
-                        )}
-                      </button>
+                        Delete
+                      </Button>
+                    </>
+                  }
+                />
+                <DescriptionList>
+                  <DescriptionRow label="Playback URL" hint="HLS master playlist">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <CopyField value={`${origin}${playbackPath(selected)}`} className="min-w-0 flex-1" />
+                      <a
+                        href={playbackPath(selected)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={buttonClass('ghost', 'xs', 'shrink-0')}
+                        title="Open master playlist"
+                      >
+                        <ExternalLink size={13} />
+                        Open
+                      </a>
                     </div>
-                  </div>
-                  <div className="flex gap-1.5 flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setModal({ open: true, edit: selected })}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                    >
-                      <Pencil size={12} />
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(selected)}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-                    >
-                      <Trash2 size={12} />
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
+                  </DescriptionRow>
+                  <DescriptionRow label="Variants">
+                    {tracks ? (
+                      <span className="tabular">
+                        {tracks.length} configured · {liveTracks} live
+                      </span>
+                    ) : (
+                      <span className="text-fg-muted">—</span>
+                    )}
+                  </DescriptionRow>
+                </DescriptionList>
+              </Card>
 
-              <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-800">
-                  <h3 className="text-sm font-medium text-gray-200">
-                    Tracks ({tracks?.length ?? 0})
-                  </h3>
-                </div>
-                {!tracks || tracks.length === 0 ? (
-                  <div className="px-4 py-8 text-center text-sm text-gray-500">
-                    No tracks yet. Click Edit to add some.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-800/40 text-xs uppercase tracking-wider text-gray-500">
-                        <tr>
-                          <th className="px-4 py-2 text-left font-medium">Stream</th>
-                          <th className="px-4 py-2 text-left font-medium">Status</th>
-                          <th className="px-4 py-2 text-left font-medium">Bandwidth</th>
-                          <th className="px-4 py-2 text-left font-medium">Avg</th>
-                          <th className="px-4 py-2 text-left font-medium">Resolution</th>
-                          <th className="px-4 py-2 text-left font-medium">Codecs</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-800">
-                        {tracks.map((v) => (
-                          <tr key={v.id}>
-                            <td className="px-4 py-2.5 text-white font-mono text-xs">
-                              {v.stream_name}
-                              {(v.stream_name.includes('%i') || v.stream_name.includes('*')) && (
-                                <span className="ml-2">
+              {!tracks ? (
+                <TableSkeleton rows={3} cols={6} />
+              ) : tracks.length === 0 ? (
+                <Card>
+                  <EmptyState
+                    compact
+                    icon={<ListPlus size={20} />}
+                    title="No variants yet"
+                    description="Add the renditions (streams) this group's master playlist should offer."
+                    action={
+                      <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => openEdit(selected)}>
+                        Add variants
+                      </Button>
+                    }
+                  />
+                </Card>
+              ) : (
+                <TableCard
+                  header={
+                    <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-[15px] font-semibold text-fg">
+                        Variants <span className="font-normal text-fg-muted">({tracks.length})</span>
+                      </h3>
+                      <Button variant="secondary" size="xs" icon={<Pencil size={13} />} onClick={() => openEdit(selected)}>
+                        Add / edit variants
+                      </Button>
+                    </div>
+                  }
+                  footer="Empty values are auto-detected from the live stream. Offline variants are left out of the master."
+                >
+                  <Table>
+                    <THead>
+                      <tr>
+                        <TH>Stream</TH>
+                        <TH>Status</TH>
+                        <TH align="right">Bandwidth</TH>
+                        <TH align="right">Avg</TH>
+                        <TH align="right">Resolution</TH>
+                        <TH>Codecs</TH>
+                      </tr>
+                    </THead>
+                    <TBody>
+                      {tracks.map((v) => {
+                        const srcApp = v.src_app_name || selected.app_name
+                        const on = isLive(srcApp, v.stream_name)
+                        return (
+                          <TR key={v.id}>
+                            <TD>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-xs text-fg">
+                                  {v.src_app_name && v.src_app_name !== selected.app_name && (
+                                    <span className="text-fg-muted">{v.src_app_name}/</span>
+                                  )}
+                                  {v.stream_name}
+                                </span>
+                                {(v.stream_name.includes('%i') || v.stream_name.includes('*')) && (
                                   <Badge variant="purple">every match</Badge>
-                                </span>
-                              )}
-                              {v.audio_only && (
-                                <span className="ml-2">
-                                  <Badge variant="purple">audio</Badge>
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2.5">
-                              {isLive(v.src_app_name || selected.app_name, v.stream_name) ? (
-                                <Badge variant="green">live</Badge>
-                              ) : (
-                                <Badge variant="gray">offline</Badge>
-                              )}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-300">
-                              {v.bandwidth ? formatBitrate(v.bandwidth) : 'auto'}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-300">
-                              {v.avg_bandwidth ? formatBitrate(v.avg_bandwidth) : '—'}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-300">
-                              {v.width && v.height ? `${v.width}x${v.height}` : 'auto'}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-400 text-xs font-mono">
-                              {v.codecs || 'auto'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
+                                )}
+                                {v.audio_only && <Badge variant="purple">audio</Badge>}
+                              </div>
+                            </TD>
+                            <TD>
+                              <StatusBadge status={on ? 'live' : 'idle'} label={on ? 'Live' : 'Offline'} />
+                            </TD>
+                            <TD numeric>{v.bandwidth ? formatBitrate(v.bandwidth) : <span className="text-fg-muted">auto</span>}</TD>
+                            <TD numeric>{v.avg_bandwidth ? formatBitrate(v.avg_bandwidth) : <span className="text-fg-muted">—</span>}</TD>
+                            <TD numeric>
+                              {v.width && v.height ? `${v.width}x${v.height}` : <span className="text-fg-muted">auto</span>}
+                            </TD>
+                            <TD mono>{v.codecs || <span className="text-fg-muted">auto</span>}</TD>
+                          </TR>
+                        )
+                      })}
+                    </TBody>
+                  </Table>
+                </TableCard>
+              )}
             </div>
           ) : (
-            <div className="rounded-lg border border-gray-800 bg-gray-900 p-12 text-center">
-              <Layers className="mx-auto text-gray-600 mb-3" size={32} />
-              <div className="text-sm text-gray-400">Select a group</div>
-            </div>
+            <Card>
+              <EmptyState
+                icon={<Layers size={20} />}
+                title="Select a group"
+                description="Pick a group on the left to see its playback URL and variants."
+              />
+            </Card>
           )}
         </div>
-      </div>
+      )}
 
       <GroupModal
         open={modal.open}
         edit={modal.edit}
         onClose={() => setModal({ open: false, edit: null })}
         onSaved={(id) => {
+          const wasEdit = !!modal.edit
           setModal({ open: false, edit: null })
           setSelectedId(id)
           refreshGroups()
           refreshTracks()
+          toast.success(wasEdit ? 'ABR group saved' : 'ABR group created')
         }}
       />
 
@@ -281,12 +349,13 @@ function ABRContent() {
         onConfirm={async () => {
           if (!deleteTarget) return
           await deleteABRGroup(deleteTarget.id)
+          toast.success(`Deleted ABR group ${deleteTarget.app_name}/${deleteTarget.stream_name}`)
           if (deleteTarget.id === selectedId) setSelectedId(null)
           setDeleteTarget(null)
           refreshGroups()
         }}
       />
-    </div>
+    </>
   )
 }
 
@@ -411,18 +480,21 @@ function GroupModal({
     }
   }
 
-  const cell = inputClass + ' !py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed'
+
+  const cell = inputClass + ' disabled:opacity-50 disabled:cursor-not-allowed'
+  const th = 'whitespace-nowrap px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-fg-muted'
 
   return (
     <Modal
       open={open}
       onClose={() => !busy && onClose()}
       title={edit ? `Edit ABR Group: ${edit.app_name}/${edit.stream_name}` : 'New ABR Group'}
+      description="Pick the application and the streams (renditions) the master playlist offers. Changes are saved together."
       size="xl"
     >
-      <form onSubmit={onSubmit} className="space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <FormField label="App Name">
+      <form onSubmit={onSubmit} className="space-y-5">
+        <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
+          <FormField label="App Name" required>
             <select
               required
               value={appName}
@@ -442,7 +514,14 @@ function GroupModal({
           </FormField>
           <FormField
             label="Group Name"
-            hint={appName && groupName ? `/${appName}/${groupName}/playlist.m3u8` : 'Used in the playback URL'}
+            required
+            hint={
+              appName && groupName ? (
+                <span className="font-mono">/{appName}/{groupName}/playlist.m3u8</span>
+              ) : (
+                'Used in the playback URL'
+              )
+            }
           >
             <input
               required
@@ -454,37 +533,45 @@ function GroupModal({
           </FormField>
         </div>
 
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-xs uppercase tracking-wider text-gray-500">Tracks</div>
-            <button
-              type="button"
+        <div className="space-y-2 border-t border-border pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-[13px] font-semibold text-fg">
+                Tracks <span className="font-normal text-fg-muted">({tracks.length})</span>
+              </div>
+              <div className="mt-0.5 text-xs text-fg-muted">Leave bandwidth, resolution and codecs empty to auto-detect.</div>
+            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Plus size={14} />}
               onClick={() => setTracks([...tracks, emptyTrack()])}
-              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 transition"
             >
-              <Plus size={14} />
               Add Track
-            </button>
+            </Button>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-xs uppercase tracking-wider text-gray-500">
-                <tr className="border-b border-gray-800">
-                  <th className="px-2 py-2 text-left font-medium">Stream Name</th>
-                  <th className="px-2 py-2 text-left font-medium">Bandwidth (bps)</th>
-                  <th className="px-2 py-2 text-left font-medium">Avg Bandwidth</th>
-                  <th className="px-2 py-2 text-left font-medium">Resolution</th>
-                  <th className="px-2 py-2 text-left font-medium">Codecs</th>
-                  <th className="px-2 py-2 text-center font-medium">Audio Only</th>
-                  <th />
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-[13px]">
+              <thead className="border-b border-border bg-elevated/40">
+                <tr>
+                  <th className={th}>Stream Name</th>
+                  <th className={th}>Bandwidth (bps)</th>
+                  <th className={th}>Avg Bandwidth</th>
+                  <th className={th}>Resolution</th>
+                  <th className={th}>Codecs</th>
+                  <th className={th + ' !text-center'}>Audio Only</th>
+                  <th className={th}>
+                    <span className="sr-only">Remove</span>
+                  </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-800">
+              <tbody className="divide-y divide-border">
                 {tracks.map((t, i) => (
-                  <tr key={i}>
-                    <td className="px-2 py-2 min-w-[180px]">
+                  <tr key={i} className="align-top">
+                    <td className="min-w-[200px] px-2 py-2">
                       <select
                         required
+                        aria-label={`Track ${i + 1} stream`}
                         value={t.stream_name}
                         onChange={(e) => {
                           const v = e.target.value
@@ -521,89 +608,98 @@ function GroupModal({
                         </optgroup>
                       </select>
                       {isPattern(t.stream_name) && (
-                        <div className="mt-1 text-[11px] text-purple-300">
+                        <div className="mt-1 text-xs text-info">
                           {liveMatches(t.stream_name).length
                             ? `live now: ${liveMatches(t.stream_name).join(', ')}`
                             : 'none live now; renditions appear as they publish'}
                         </div>
                       )}
                     </td>
-                    <td className="px-2 py-2 min-w-[120px]">
+                    <td className="min-w-[130px] px-2 py-2">
                       <input
                         type="number"
                         min={0}
+                        aria-label={`Track ${i + 1} bandwidth (bps)`}
                         value={isPattern(t.stream_name) ? '' : t.bandwidth || ''}
                         onChange={(e) => setTrack(i, { bandwidth: Number(e.target.value) || 0 })}
-                        className={cell}
+                        className={cell + ' tabular text-right'}
                         disabled={isPattern(t.stream_name)}
                         placeholder={isPattern(t.stream_name) ? 'auto per stream' : '0=auto'}
                       />
                     </td>
-                    <td className="px-2 py-2 min-w-[120px]">
+                    <td className="min-w-[130px] px-2 py-2">
                       <input
                         type="number"
                         min={0}
+                        aria-label={`Track ${i + 1} average bandwidth`}
                         value={isPattern(t.stream_name) ? '' : t.avg_bandwidth || ''}
                         onChange={(e) =>
                           setTrack(i, { avg_bandwidth: Number(e.target.value) || 0 })
                         }
-                        className={cell}
+                        className={cell + ' tabular text-right'}
                         disabled={isPattern(t.stream_name)}
                         placeholder={isPattern(t.stream_name) ? 'auto' : '0=omit'}
                       />
                     </td>
-                    <td className="px-2 py-2 min-w-[110px]">
+                    <td className="min-w-[120px] px-2 py-2">
                       <input
+                        aria-label={`Track ${i + 1} resolution`}
                         value={isPattern(t.stream_name) ? '' : t.resolution}
                         onChange={(e) => setTrack(i, { resolution: e.target.value })}
-                        className={cell}
+                        className={cell + ' font-mono text-xs'}
                         disabled={isPattern(t.stream_name)}
                         placeholder={isPattern(t.stream_name) ? 'auto per stream' : 'auto'}
                         pattern="\d+[xX]\d+"
                         title="WIDTHxHEIGHT, e.g. 1280x720, or empty for auto"
                       />
                     </td>
-                    <td className="px-2 py-2 min-w-[160px]">
+                    <td className="min-w-[170px] px-2 py-2">
                       <input
+                        aria-label={`Track ${i + 1} codecs`}
                         value={t.codecs}
                         onChange={(e) => setTrack(i, { codecs: e.target.value })}
-                        className={cell}
+                        className={cell + ' font-mono text-xs'}
                         placeholder="auto"
                       />
                     </td>
                     <td className="px-2 py-2 text-center">
-                      <input
-                        type="checkbox"
-                        checked={t.audio_only}
-                        onChange={(e) => setTrack(i, { audio_only: e.target.checked })}
-                      />
+                      <div className="flex h-9 items-center justify-center">
+                        <input
+                          type="checkbox"
+                          aria-label={`Track ${i + 1} audio only`}
+                          className={checkboxClass}
+                          checked={t.audio_only}
+                          onChange={(e) => setTrack(i, { audio_only: e.target.checked })}
+                        />
+                      </div>
                     </td>
                     <td className="px-2 py-2 text-right">
-                      <button
-                        type="button"
+                      <IconButton
+                        variant="danger-outline"
+                        size="sm"
+                        label={tracks.length === 1 ? 'A group needs at least one track' : `Remove track ${i + 1}`}
                         disabled={tracks.length === 1}
                         onClick={() => setTracks(tracks.filter((_, j) => j !== i))}
-                        className="px-2 py-1 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition disabled:opacity-40"
-                        title="Remove track"
+                        className="mt-0.5"
                       >
                         <X size={14} />
-                      </button>
+                      </IconButton>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="text-xs text-gray-500 mt-2">
+          <div className="max-w-3xl text-xs leading-relaxed text-fg-muted">
             Lists {appName || "the app"}&apos;s streams (create them under{' '}
-            <a href="/stream-configs/" className="text-blue-400 hover:text-blue-300">
+            <a href="/stream-configs/" className="text-primary-fg hover:underline">
               Streams
             </a>
             , e.g. test1…test5) plus anything live now. Offline tracks are left out of the master
             until they publish.
             {patterns.length > 0 && (
               <>
-                {' '}Choose <span className="font-mono text-gray-400">{patterns[0]}</span> to include every
+                {' '}Choose <span className="font-mono text-fg-secondary">{patterns[0]}</span> to include every
                 matching stream automatically (test1, test2, … as they publish); bandwidth and
                 resolution then come from each stream.
               </>

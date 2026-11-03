@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { Plus, Trash2, Pencil, Play, Square, Download, Lock, X } from 'lucide-react'
 import { Layout } from '@/components/Layout'
@@ -12,8 +12,30 @@ import {
   ModalActions,
   ErrorBox,
   ConfirmDelete,
+  CheckboxField,
+  FormSection,
   useStateReset,
 } from '@/components/FormHelpers'
+import {
+  PageHeader,
+  Button,
+  IconButton,
+  TableCard,
+  Table,
+  THead,
+  TH,
+  TBody,
+  TR,
+  TD,
+  RowActions,
+  Truncate,
+  DropdownMenu,
+  EmptyState,
+  TableSkeleton,
+  StatusBadge,
+  StatusDot,
+  useToast,
+} from '@/components/ui'
 import {
   listPullSources,
   createPullSource,
@@ -32,168 +54,231 @@ export default function PullPage() {
   )
 }
 
+// Display names for the protocol badge; every protocol uses the same
+// badge tone so color never stands in for meaning here.
+const PROTOCOL_LABEL: Record<string, string> = {
+  rtmp: 'RTMP',
+  rtsp: 'RTSP',
+  srt: 'SRT',
+  mpegts_http: 'MPEG-TS HTTP',
+  mpegts_udp: 'MPEG-TS UDP',
+  hls: 'HLS',
+}
+
+const protocolLabel = (p: string) => PROTOCOL_LABEL[p] ?? (p || '—')
+
+// onFallback: the source is running from one of its fallback URLs rather
+// than the primary.
+const onFallback = (s: PullSource) =>
+  s.status === 'active' && (s.fallback_urls?.length ?? 0) > 0 && !!s.active_url && s.active_url !== s.url
+
+type SortKey = 'stream' | 'app' | 'protocol' | 'status'
+type SortState = { key: SortKey; dir: 'asc' | 'desc' }
+
+function sortValue(s: PullSource, key: SortKey): string {
+  switch (key) {
+    case 'stream':
+      return s.stream_name.toLowerCase()
+    case 'app':
+      return s.app_name.toLowerCase()
+    case 'protocol':
+      return (s.protocol || '').toLowerCase()
+    case 'status':
+      return (s.status || '').toLowerCase()
+  }
+}
+
 function PullContent() {
-  const { data, mutate } = useSWR('pull-sources', listPullSources, {
+  const { data, mutate, isLoading } = useSWR('pull-sources', listPullSources, {
     refreshInterval: 5000,
   })
+  const toast = useToast()
   const [newOpen, setNewOpen] = useState(false)
   const [editing, setEditing] = useState<PullSource | null>(null)
   const [deleting, setDeleting] = useState<PullSource | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [opErr, setOpErr] = useState<string | null>(null)
+  const [sort, setSort] = useState<SortState>({ key: 'app', dir: 'asc' })
 
-  const sources = data ?? []
+  const sources = useMemo(() => {
+    const mul = sort.dir === 'asc' ? 1 : -1
+    return [...(data ?? [])].sort((a, b) => {
+      const va = sortValue(a, sort.key)
+      const vb = sortValue(b, sort.key)
+      if (va < vb) return -1 * mul
+      if (va > vb) return 1 * mul
+      return a.app_name.localeCompare(b.app_name) || a.stream_name.localeCompare(b.stream_name)
+    })
+  }, [data, sort])
 
-  const op = async (id: string, fn: () => Promise<void>) => {
+  const sortProps = (key: SortKey) => ({
+    sort: sort.key === key ? sort.dir : (false as const),
+    onSort: () =>
+      setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })),
+  })
+
+  const op = async (id: string, fn: () => Promise<void>, done: string) => {
     setBusyId(id)
-    setOpErr(null)
     try {
       await fn()
+      toast.success(done)
       mutate()
     } catch (e: any) {
-      setOpErr(e?.message ?? 'Operation failed')
+      toast.error(e?.message ?? 'Operation failed')
     } finally {
       setBusyId(null)
     }
   }
 
+  const createButton = (
+    <Button variant="primary" size="md" icon={<Plus size={16} />} onClick={() => setNewOpen(true)}>
+      New source
+    </Button>
+  )
+
   return (
-    <div className="space-y-6 max-w-7xl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Pull Sources</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Ingest remote streams into this server
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setNewOpen(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-        >
-          <Plus size={16} />
-          New Source
-        </button>
-      </div>
+    <>
+      <PageHeader
+        title="Pull Sources"
+        description="Ingest remote streams into this server. Each source can list fallback URLs that are tried in order when the primary fails."
+        actions={createButton}
+      />
 
-      {opErr && <ErrorBox msg={opErr} />}
-
-      {sources.length === 0 ? (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-12 text-center">
-          <Download className="mx-auto text-gray-600 mb-3" size={32} />
-          <div className="text-sm text-gray-400">No pull sources configured</div>
-          <div className="text-xs text-gray-500 mt-1">
-            Pull a remote RTMP / RTSP / SRT / HLS feed into a local app
-          </div>
-        </div>
+      {isLoading ? (
+        <TableSkeleton rows={3} cols={7} />
+      ) : sources.length === 0 ? (
+        <TableCard>
+          <EmptyState
+            icon={<Download size={20} />}
+            title="No pull sources configured"
+            description="Pull a remote RTMP, RTSP, SRT or MPEG-TS feed into a local app."
+            action={createButton}
+          />
+        </TableCard>
       ) : (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-800/50 text-xs uppercase tracking-wider text-gray-500">
+        <TableCard>
+          <Table>
+            <THead>
               <tr>
-                <th className="px-4 py-2 text-left font-medium">App</th>
-                <th className="px-4 py-2 text-left font-medium">Stream</th>
-                <th className="px-4 py-2 text-left font-medium">URL</th>
-                <th className="px-4 py-2 text-left font-medium">Protocol</th>
-                <th className="px-4 py-2 text-left font-medium">Status</th>
-                <th className="px-4 py-2 text-left font-medium">On Demand</th>
-                <th className="px-4 py-2 text-right font-medium">Actions</th>
+                <TH {...sortProps('stream')}>Stream</TH>
+                <TH {...sortProps('app')}>App</TH>
+                <TH>Source URL</TH>
+                <TH {...sortProps('protocol')}>Protocol</TH>
+                <TH align="right">Fallbacks</TH>
+                <TH {...sortProps('status')}>Status</TH>
+                <TH>Mode</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800">
+            </THead>
+            <TBody>
               {sources.map((s) => {
                 const isActive = s.status === 'active'
+                const fallback = onFallback(s)
+                const nFallback = s.fallback_urls?.length ?? 0
                 return (
-                  <tr key={s.id} className="hover:bg-gray-800/30 transition">
-                    <td className="px-4 py-2.5 text-gray-300">{s.app_name}</td>
-                    <td className="px-4 py-2.5 text-white font-medium">
-                      {s.stream_name}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs font-mono max-w-[280px]">
-                      <div className="truncate text-gray-300" title={s.url}>
-                        {s.url}
+                  <TR key={s.id}>
+                    <TD>
+                      <div className="flex items-center gap-2.5">
+                        <StatusDot status={isActive ? (fallback ? 'warning' : 'live') : 'idle'} />
+                        <span className="font-medium text-fg">{s.stream_name}</span>
                       </div>
-                      {(s.fallback_urls?.length ?? 0) > 0 && (
-                        <div className="mt-0.5 flex items-center gap-1.5 font-sans">
-                          <span className="text-gray-500">
-                            +{s.fallback_urls!.length} fallback
-                            {s.fallback_urls!.length > 1 ? 's' : ''}
+                    </TD>
+                    <TD>{s.app_name}</TD>
+                    <TD>
+                      <div className="flex flex-col gap-0.5">
+                        <Truncate mono max="max-w-[300px]" className="text-fg-secondary">
+                          {s.url}
+                        </Truncate>
+                        {fallback && (
+                          <span className="flex min-w-0 items-center gap-1 text-xs text-warning">
+                            <span className="shrink-0">via</span>
+                            <Truncate mono max="max-w-[270px]">
+                              {s.active_url!}
+                            </Truncate>
                           </span>
-                          {isActive && s.active_url && s.active_url !== s.url && (
-                            <span title={s.active_url}>
-                              <Badge variant="yellow">on fallback</Badge>
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
+                        )}
+                      </div>
+                    </TD>
+                    <TD>
                       <div className="inline-flex items-center gap-1.5">
-                        <Badge variant="blue">{s.protocol}</Badge>
+                        <Badge variant="blue" mono>
+                          {protocolLabel(s.protocol)}
+                        </Badge>
                         {s.protocol === 'srt' && s.has_passphrase && (
-                          <Lock size={11} className="text-gray-500" />
+                          <span title="Encrypted (passphrase set)" className="inline-flex text-fg-muted">
+                            <Lock size={13} aria-hidden />
+                            <span className="sr-only">Encrypted</span>
+                          </span>
                         )}
                       </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {isActive ? (
-                        <Badge variant="green">active</Badge>
-                      ) : (
-                        <Badge variant="gray">{s.status || 'inactive'}</Badge>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {s.on_demand ? (
-                        <Badge variant="purple">on-demand</Badge>
-                      ) : (
-                        <Badge variant="gray">always</Badge>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <div className="inline-flex gap-1.5">
+                    </TD>
+                    <TD numeric muted={nFallback === 0}>
+                      {nFallback}
+                    </TD>
+                    <TD>
+                      <div className="flex flex-col items-start gap-1">
                         {isActive ? (
-                          <button
-                            type="button"
-                            disabled={busyId === s.id}
-                            onClick={() => op(s.id, () => stopPull(s.id))}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 border border-yellow-500/40 disabled:opacity-50 transition"
-                          >
-                            <Square size={11} />
-                            Stop
-                          </button>
+                          <StatusBadge status="success" label="Active" />
                         ) : (
-                          <button
-                            type="button"
-                            disabled={busyId === s.id}
-                            onClick={() => op(s.id, () => startPull(s.id))}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-green-500/20 hover:bg-green-500/30 text-green-400 border border-green-500/40 disabled:opacity-50 transition"
-                          >
-                            <Play size={11} />
-                            Start
-                          </button>
+                          <StatusBadge
+                            status={s.status === 'error' ? 'error' : 'idle'}
+                            label={capitalize(s.status || 'inactive')}
+                          />
                         )}
-                        <button
-                          type="button"
-                          onClick={() => setEditing(s)}
-                          className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                        >
-                          <Pencil size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDeleting(s)}
-                          className="px-2 py-1 text-xs rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        {fallback && (
+                          <span title={`Running from fallback ${s.active_url}`}>
+                            <StatusBadge status="warning" label="On fallback" />
+                          </span>
+                        )}
                       </div>
-                    </td>
-                  </tr>
+                    </TD>
+                    <TD className="whitespace-nowrap">{s.on_demand ? 'On demand' : 'Always on'}</TD>
+                    <TD align="right">
+                      <RowActions>
+                        {isActive ? (
+                          <Button
+                            size="xs"
+                            variant="danger-outline"
+                            icon={<Square size={12} />}
+                            loading={busyId === s.id}
+                            onClick={() => op(s.id, () => stopPull(s.id), `Stopped ${s.app_name}/${s.stream_name}`)}
+                          >
+                            Stop
+                          </Button>
+                        ) : (
+                          <Button
+                            size="xs"
+                            variant="secondary"
+                            icon={<Play size={12} />}
+                            loading={busyId === s.id}
+                            onClick={() => op(s.id, () => startPull(s.id), `Started ${s.app_name}/${s.stream_name}`)}
+                          >
+                            Start
+                          </Button>
+                        )}
+                        <IconButton label="Edit source" size="xs" onClick={() => setEditing(s)}>
+                          <Pencil size={14} />
+                        </IconButton>
+                        <DropdownMenu
+                          label={`More actions for ${s.app_name}/${s.stream_name}`}
+                          items={[
+                            {
+                              label: 'Delete source',
+                              icon: <Trash2 size={14} />,
+                              danger: true,
+                              onClick: () => setDeleting(s),
+                            },
+                          ]}
+                        />
+                      </RowActions>
+                    </TD>
+                  </TR>
                 )
               })}
-            </tbody>
-          </table>
-        </div>
+            </TBody>
+          </Table>
+        </TableCard>
       )}
 
       <PullModal
@@ -202,6 +287,7 @@ function PullContent() {
         onClose={() => setNewOpen(false)}
         onSaved={() => {
           setNewOpen(false)
+          toast.success('Pull source created')
           mutate()
         }}
       />
@@ -211,6 +297,7 @@ function PullContent() {
         onClose={() => setEditing(null)}
         onSaved={() => {
           setEditing(null)
+          toast.success('Pull source saved')
           mutate()
         }}
       />
@@ -223,13 +310,16 @@ function PullContent() {
         onConfirm={async () => {
           if (!deleting) return
           await deletePullSource(deleting.id)
+          toast.success(`Deleted pull source ${deleting.app_name}/${deleting.stream_name}`)
           setDeleting(null)
           mutate()
         }}
       />
-    </div>
+    </>
   )
 }
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 function PullModal({
   open,
@@ -313,207 +403,212 @@ function PullModal({
     }
   }
 
+  const urlInputClass = inputClass + ' font-mono text-[13px]'
+
   return (
     <Modal
       open={open}
       onClose={() => !busy && onClose()}
       title={edit ? 'Edit pull source' : 'New pull source'}
+      description="Pulls a remote feed and publishes it locally as app/stream."
       size="lg"
     >
-      <form onSubmit={onSubmit} className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="App name">
-            <input
-              required
-              value={form.app_name}
-              onChange={(e) => setForm({ ...form, app_name: e.target.value })}
-              className={inputClass}
-              placeholder="live"
-            />
-          </FormField>
-          <FormField label="Stream name">
-            <input
-              required
-              value={form.stream_name}
-              onChange={(e) =>
-                setForm({ ...form, stream_name: e.target.value })
-              }
-              className={inputClass}
-              placeholder="cam1"
-            />
-          </FormField>
-        </div>
-        <FormField label="Source URL">
-          <input
-            required
-            value={form.url}
-            onChange={(e) => {
-              const url = e.target.value
-              const proto = protocolForURL(url)
-              setForm({ ...form, url, protocol: proto ?? form.protocol })
-            }}
-            className={inputClass}
-            placeholder="rtsp://camera.example.com/stream"
-          />
-        </FormField>
-        <FormField label="Fallback URLs (optional)">
-          <div className="space-y-2">
-            {form.fallback_urls.map((u, i) => (
-              <div key={i} className="flex gap-2">
-                <input
-                  value={u}
-                  onChange={(e) => {
-                    const next = [...form.fallback_urls]
-                    next[i] = e.target.value
-                    setForm({ ...form, fallback_urls: next })
-                  }}
-                  className={inputClass}
-                  placeholder="rtmp://backup.example.com/app/stream"
-                />
-                <button
-                  type="button"
-                  title="Remove"
-                  onClick={() =>
-                    setForm({ ...form, fallback_urls: form.fallback_urls.filter((_, j) => j !== i) })
-                  }
-                  className="px-2 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              onClick={() => setForm({ ...form, fallback_urls: [...form.fallback_urls, ''] })}
-              className="text-xs text-blue-400 hover:text-blue-300"
-            >
-              + Add {form.fallback_urls.length ? 'another ' : ''}fallback URL
-            </button>
-            <p className="text-xs text-gray-500">
-              Tried in order when the primary fails or sends nothing for 10 s. Each URL&apos;s
-              protocol comes from its scheme (rtmp://, srt://, rtsp://, udp://, http://).
-            </p>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <FormSection title="Destination">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormField label="App name" required>
+              <input
+                required
+                value={form.app_name}
+                onChange={(e) => setForm({ ...form, app_name: e.target.value })}
+                className={inputClass}
+                placeholder="live"
+              />
+            </FormField>
+            <FormField label="Stream name" required>
+              <input
+                required
+                value={form.stream_name}
+                onChange={(e) => setForm({ ...form, stream_name: e.target.value })}
+                className={inputClass}
+                placeholder="cam1"
+              />
+            </FormField>
           </div>
-        </FormField>
-        {form.fallback_urls.length > 0 && (
-          <FormField label="Primary check interval (s)">
+        </FormSection>
+
+        <FormSection title="Source">
+          <FormField label="Source URL" required hint="The protocol is picked from the URL's scheme when it decides it.">
             <input
-              type="number"
-              min={0}
-              value={form.primary_check_s}
-              onChange={(e) => setForm({ ...form, primary_check_s: Number(e.target.value) })}
-              className={inputClass + ' max-w-[160px]'}
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              While on a fallback, the primary is tried this often and the stream switches back
-              once it has been up for 3 s. 0 = stay on the fallback until it fails.
-            </p>
-          </FormField>
-        )}
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="Protocol">
-            <select
-              value={form.protocol}
-              onChange={(e) => setForm({ ...form, protocol: e.target.value })}
-              className={inputClass}
-            >
-              <option value="rtmp">RTMP</option>
-              <option value="rtsp">RTSP</option>
-              <option value="srt">SRT</option>
-              <option value="mpegts_http">MPEG-TS over HTTP</option>
-              <option value="mpegts_udp">MPEG-TS over UDP</option>
-              <option value="hls" disabled>HLS (not supported yet)</option>
-            </select>
-          </FormField>
-          <FormField label="Reconnect delay (s)">
-            <input
-              type="number"
-              min={1}
-              value={form.reconnect_delay_s}
-              onChange={(e) =>
-                setForm({ ...form, reconnect_delay_s: Number(e.target.value) })
-              }
-              className={inputClass}
+              required
+              value={form.url}
+              onChange={(e) => {
+                const url = e.target.value
+                const proto = protocolForURL(url)
+                setForm({ ...form, url, protocol: proto ?? form.protocol })
+              }}
+              className={urlInputClass}
+              placeholder="rtsp://camera.example.com/stream"
             />
           </FormField>
-        </div>
-        {form.protocol === 'srt' && (
-          <div className="grid grid-cols-2 gap-3">
+          <FormField
+            label="Fallback URLs (optional)"
+            hint={
+              <>
+                Tried in order when the primary fails or sends nothing for 10 s. Each URL&apos;s protocol comes from its
+                scheme (rtmp://, srt://, rtsp://, udp://, http://).
+              </>
+            }
+          >
+            <div className="space-y-2">
+              {form.fallback_urls.map((u, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={u}
+                    onChange={(e) => {
+                      const next = [...form.fallback_urls]
+                      next[i] = e.target.value
+                      setForm({ ...form, fallback_urls: next })
+                    }}
+                    className={urlInputClass}
+                    placeholder="rtmp://backup.example.com/app/stream"
+                    aria-label={`Fallback URL ${i + 1}`}
+                  />
+                  <IconButton
+                    label="Remove fallback URL"
+                    variant="danger-outline"
+                    size="md"
+                    className="shrink-0"
+                    onClick={() =>
+                      setForm({ ...form, fallback_urls: form.fallback_urls.filter((_, j) => j !== i) })
+                    }
+                  >
+                    <X size={15} />
+                  </IconButton>
+                </div>
+              ))}
+              <Button
+                size="xs"
+                variant="ghost"
+                icon={<Plus size={13} />}
+                onClick={() => setForm({ ...form, fallback_urls: [...form.fallback_urls, ''] })}
+              >
+                Add {form.fallback_urls.length ? 'another ' : ''}fallback URL
+              </Button>
+            </div>
+          </FormField>
+          {form.fallback_urls.length > 0 && (
             <FormField
-              label={
-                edit?.has_passphrase
-                  ? 'Passphrase (leave blank to keep existing)'
-                  : 'Passphrase (optional — for an encrypted upstream)'
-              }
+              label="Primary check interval (s)"
+              hint="While on a fallback, the primary is tried this often and the stream switches back once it has been up for 3 s. 0 = stay on the fallback until it fails."
             >
               <input
-                type="password"
-                value={form.passphrase}
-                onChange={(e) => {
-                  setForm({ ...form, passphrase: e.target.value })
-                  if (e.target.value) setClearPassphrase(false)
-                }}
-                className={inputClass}
-                placeholder={
-                  edit?.has_passphrase ? '••••••••••' : '10-79 characters'
-                }
-                minLength={form.passphrase ? 10 : undefined}
-                maxLength={79}
+                type="number"
+                min={0}
+                value={form.primary_check_s}
+                onChange={(e) => setForm({ ...form, primary_check_s: Number(e.target.value) })}
+                className={inputClass + ' max-w-[160px]'}
               />
-              {edit?.has_passphrase && (
-                <label className="flex items-center gap-2 text-xs text-gray-400 mt-1.5">
-                  <input
-                    type="checkbox"
-                    checked={clearPassphrase}
-                    onChange={(e) => {
-                      setClearPassphrase(e.target.checked)
-                      if (e.target.checked) setForm({ ...form, passphrase: '' })
-                    }}
-                  />
-                  Remove passphrase (pull unencrypted)
-                </label>
-              )}
             </FormField>
-            <FormField label="Key length (bytes)">
+          )}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormField label="Protocol">
               <select
-                value={form.pbkeylen}
-                onChange={(e) =>
-                  setForm({ ...form, pbkeylen: Number(e.target.value) })
-                }
+                value={form.protocol}
+                onChange={(e) => setForm({ ...form, protocol: e.target.value })}
                 className={inputClass}
               >
-                <option value={0}>Default (16)</option>
-                <option value={16}>16</option>
-                <option value={24}>24</option>
-                <option value={32}>32</option>
+                <option value="rtmp">RTMP</option>
+                <option value="rtsp">RTSP</option>
+                <option value="srt">SRT</option>
+                <option value="mpegts_http">MPEG-TS over HTTP</option>
+                <option value="mpegts_udp">MPEG-TS over UDP</option>
+                <option value="hls" disabled>
+                  HLS (not supported yet)
+                </option>
               </select>
             </FormField>
+            <FormField label="Reconnect delay (s)">
+              <input
+                type="number"
+                min={1}
+                value={form.reconnect_delay_s}
+                onChange={(e) => setForm({ ...form, reconnect_delay_s: Number(e.target.value) })}
+                className={inputClass}
+              />
+            </FormField>
           </div>
+        </FormSection>
+
+        {form.protocol === 'srt' && (
+          <FormSection title="SRT encryption">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FormField
+                label={
+                  edit?.has_passphrase
+                    ? 'Passphrase (leave blank to keep existing)'
+                    : 'Passphrase (optional — for an encrypted upstream)'
+                }
+              >
+                <input
+                  type="password"
+                  value={form.passphrase}
+                  onChange={(e) => {
+                    setForm({ ...form, passphrase: e.target.value })
+                    if (e.target.value) setClearPassphrase(false)
+                  }}
+                  className={inputClass}
+                  placeholder={edit?.has_passphrase ? '••••••••••' : '10-79 characters'}
+                  minLength={form.passphrase ? 10 : undefined}
+                  maxLength={79}
+                />
+                {edit?.has_passphrase && (
+                  <div className="mt-2">
+                    <CheckboxField
+                      checked={clearPassphrase}
+                      onChange={(v) => {
+                        setClearPassphrase(v)
+                        if (v) setForm({ ...form, passphrase: '' })
+                      }}
+                      label="Remove passphrase (pull unencrypted)"
+                    />
+                  </div>
+                )}
+              </FormField>
+              <FormField label="Key length (bytes)">
+                <select
+                  value={form.pbkeylen}
+                  onChange={(e) => setForm({ ...form, pbkeylen: Number(e.target.value) })}
+                  className={inputClass}
+                >
+                  <option value={0}>Default (16)</option>
+                  <option value={16}>16</option>
+                  <option value={24}>24</option>
+                  <option value={32}>32</option>
+                </select>
+              </FormField>
+            </div>
+          </FormSection>
         )}
-        <div className="flex flex-col gap-2">
-          <label className="flex items-center gap-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
+
+        <FormSection title="Behavior">
+          <div className="space-y-2.5">
+            <CheckboxField
               checked={form.on_demand}
-              onChange={(e) => setForm({ ...form, on_demand: e.target.checked })}
+              onChange={(v) => setForm({ ...form, on_demand: v })}
+              label="On demand"
+              description="Start pull only when a subscriber connects"
             />
-            On demand (start pull only when a subscriber connects)
-          </label>
-          <label className="flex items-center gap-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
+            <CheckboxField
               checked={form.reconnect}
-              onChange={(e) => setForm({ ...form, reconnect: e.target.checked })}
+              onChange={(v) => setForm({ ...form, reconnect: v })}
+              label="Reconnect on failure"
             />
-            Reconnect on failure
-          </label>
-        </div>
+          </div>
+        </FormSection>
+
         <ErrorBox msg={err} />
-        <ModalActions
-          busy={busy}
-          onCancel={onClose}
-          submitLabel={edit ? 'Save' : 'Create'}
-        />
+        <ModalActions busy={busy} onCancel={onClose} submitLabel={edit ? 'Save' : 'Create'} />
       </form>
     </Modal>
   )

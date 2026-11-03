@@ -2,11 +2,33 @@
 
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
-import { Plus, Pencil, Trash2, Copy, Check, ListVideo } from 'lucide-react'
+import clsx from 'clsx'
+import { Plus, Pencil, Trash2, Copy, ListVideo, ExternalLink } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/Badge'
-import { ConfirmDelete } from '@/components/FormHelpers'
+import { ConfirmDelete, inputClass } from '@/components/FormHelpers'
 import { StreamConfigModal } from '@/components/StreamConfigModal'
+import {
+  PageHeader,
+  Button,
+  IconButton,
+  TableCard,
+  Table,
+  THead,
+  TH,
+  TBody,
+  TR,
+  TD,
+  RowActions,
+  Truncate,
+  CopyButton,
+  DropdownMenu,
+  EmptyState,
+  TableSkeleton,
+  StatusBadge,
+  SearchInput,
+  useToast,
+} from '@/components/ui'
 import {
   listApplications,
   listStreamConfigs,
@@ -14,8 +36,9 @@ import {
   listStreams,
   Application,
   StreamConfig,
+  getNodeInfo,
 } from '@/lib/api'
-import { copyToClipboard, matchesStreamPattern } from '@/lib/utils'
+import { copyToClipboard, matchesStreamPattern, listenPort } from '@/lib/utils'
 
 // Streams: every stream defined under an application, in one list, like the
 // standalone DVR server's Streams page. A stream is created by picking its
@@ -46,22 +69,66 @@ async function loadAll(): Promise<Row[]> {
   return per.flat()
 }
 
+type SortKey = 'name' | 'status'
+type SortState = { key: SortKey; dir: 'asc' | 'desc' }
+
+// Segmented control for the All / Live / Idle filter.
+function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  value: T
+  options: { value: T; label: string }[]
+  onChange: (v: T) => void
+  label: string
+}) {
+  return (
+    <div role="group" aria-label={label} className="inline-flex h-8 overflow-hidden rounded-md border border-border">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          aria-pressed={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={clsx(
+            'border-r border-border px-3 text-[13px] transition-colors last:border-r-0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary-fg',
+            value === o.value ? 'bg-primary/15 font-medium text-primary-fg' : 'text-fg-secondary hover:bg-elevated hover:text-fg',
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function StreamConfigsContent() {
   const { data: rows, mutate, isLoading } = useSWR('all-stream-configs', loadAll)
   const { data: live } = useSWR('streams', listStreams, { refreshInterval: 3000 })
+  // Same key/interval as the dashboard, so SWR shares the request.
+  const { data: node } = useSWR('node', getNodeInfo, { refreshInterval: 30000 })
+  const toast = useToast()
   const [modal, setModal] = useState<{ open: boolean; edit: Row | null }>({ open: false, edit: null })
   const [del, setDel] = useState<Row | null>(null)
   const [status, setStatus] = useState<'all' | 'live' | 'idle'>('all')
   const [appFilter, setAppFilter] = useState('')
   const [q, setQ] = useState('')
-  const [copied, setCopied] = useState<string | null>(null)
+  const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' })
 
   const liveFor = (r: Row) => (live ?? []).filter((s) => s.app === r.app.name && matches(r.cfg, s.name))
 
-  const apps = useMemo(
-    () => Array.from(new Set((rows ?? []).map((r) => r.app.name))).sort(),
-    [rows],
-  )
+  const apps = useMemo(() => Array.from(new Set((rows ?? []).map((r) => r.app.name))).sort(), [rows])
+
+  // Default order: app, then name with numeric collation (test2 before test10).
+  const byName = (a: Row, b: Row) =>
+    a.app.name === b.app.name
+      ? a.cfg.name_pattern.localeCompare(b.cfg.name_pattern, undefined, { numeric: true })
+      : a.app.name.localeCompare(b.app.name)
+  // Status rank for sorting: live, idle, disabled.
+  const rank = (r: Row) => (!r.cfg.enabled ? 2 : liveFor(r).length > 0 ? 0 : 1)
+
   const shown = (rows ?? [])
     .filter((r) => !appFilter || r.app.name === appFilter)
     .filter((r) => !q || `${r.app.name}/${r.cfg.name_pattern}`.toLowerCase().includes(q.toLowerCase()))
@@ -70,104 +137,120 @@ function StreamConfigsContent() {
       const isLive = liveFor(r).length > 0
       return status === 'live' ? isLive : !isLive
     })
-    .sort((a, b) =>
-      a.app.name === b.app.name
-        ? a.cfg.name_pattern.localeCompare(b.cfg.name_pattern, undefined, { numeric: true })
-        : a.app.name.localeCompare(b.app.name),
-    )
+    .sort((a, b) => {
+      const mul = sort.dir === 'asc' ? 1 : -1
+      if (sort.key === 'status') return (rank(a) - rank(b)) * mul || byName(a, b)
+      return byName(a, b) * mul
+    })
 
-  const copy = async (url: string, id: string) => {
-    if (await copyToClipboard(url)) {
-      setCopied(id)
-      setTimeout(() => setCopied(null), 1500)
-    }
+  const onSort = (key: SortKey) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
+  const sortProps = (key: SortKey) => ({
+    sort: sort.key === key ? sort.dir : (false as const),
+    onSort: () => onSort(key),
+  })
+
+  const copyFromMenu = async (url: string, what: string) => {
+    if (await copyToClipboard(url)) toast.success(`${what} copied`)
+    else toast.error('Copy failed')
   }
-
-  const tab = (active: boolean) =>
-    'px-3 py-1.5 text-xs border-r border-gray-700 last:border-r-0 transition ' +
-    (active ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:bg-gray-800')
 
   const tri = (v: number) => (v === 1 ? 'on' : v === 0 ? 'off' : null)
 
-  return (
-    <div className="space-y-6 max-w-7xl">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Streams</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Streams defined under each application. Exact-name streams can be used in ABR groups
-            before they go live.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setModal({ open: true, edit: null })}
-          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-        >
-          <Plus size={16} /> Add Stream
-        </button>
-      </div>
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const host = typeof window !== 'undefined' ? window.location.hostname : '<host>'
+  const playURL = (r: Row) => `${origin}/${r.app.name}/${r.cfg.name_pattern}/playlist.m3u8`
+  // Include the configured RTMP port (e.g. :1935) so the copied URL works as is.
+  const rtmpPort = listenPort(node?.rtmp_listen, ':1935')
+  const publishURL = (r: Row) => `rtmp://${host}${rtmpPort}/${r.app.name}/${r.cfg.name_pattern}`
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="inline-flex rounded border border-gray-700 overflow-hidden">
-          {(['all', 'live', 'idle'] as const).map((s) => (
-            <button key={s} type="button" onClick={() => setStatus(s)} className={tab(status === s)}>
-              {s === 'all' ? 'All' : s === 'live' ? 'Live' : 'Idle'}
-            </button>
-          ))}
-        </div>
-        <select
-          value={appFilter}
-          onChange={(e) => setAppFilter(e.target.value)}
-          className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300"
-        >
-          <option value="">All applications</option>
-          {apps.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </select>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Filter by name"
-          className="bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 w-56"
-        />
-        <span className="text-xs text-gray-500 ml-auto">
-          {shown.length} of {(rows ?? []).length} streams
-        </span>
-      </div>
+  const total = (rows ?? []).length
+  const filtered = !!(q || appFilter || status !== 'all')
+
+  return (
+    <>
+      <PageHeader
+        title="Streams"
+        description="Streams defined under each application. Exact-name streams can be used in ABR groups before they go live."
+        actions={
+          <Button variant="primary" size="md" icon={<Plus size={16} />} onClick={() => setModal({ open: true, edit: null })}>
+            Add Stream
+          </Button>
+        }
+      />
 
       {isLoading ? (
-        <div className="text-gray-500 text-sm">Loading…</div>
-      ) : (rows ?? []).length === 0 ? (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-12 text-center">
-          <ListVideo className="mx-auto text-gray-600 mb-3" size={32} />
-          <div className="text-gray-400 text-sm font-medium">No streams yet</div>
-          <div className="mt-2 text-xs text-gray-500">
-            Click <span className="text-gray-300">Add Stream</span>, choose the application, and
-            name the stream (several names at once for an ABR set).
-          </div>
-        </div>
+        <TableSkeleton rows={4} cols={6} />
+      ) : total === 0 ? (
+        <TableCard>
+          <EmptyState
+            icon={<ListVideo size={20} />}
+            title="No streams yet"
+            description="Choose the application and name the stream (several names at once for an ABR set)."
+            action={
+              <Button variant="primary" icon={<Plus size={14} />} onClick={() => setModal({ open: true, edit: null })}>
+                Add Stream
+              </Button>
+            }
+          />
+        </TableCard>
       ) : (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-800/50 text-gray-400 text-xs uppercase tracking-wider">
+        <TableCard
+          header={
+            <>
+              <Segmented
+                label="Filter by status"
+                value={status}
+                onChange={setStatus}
+                options={[
+                  { value: 'all', label: 'All' },
+                  { value: 'live', label: 'Live' },
+                  { value: 'idle', label: 'Idle' },
+                ]}
+              />
+              <select
+                value={appFilter}
+                onChange={(e) => setAppFilter(e.target.value)}
+                aria-label="Filter by application"
+                className={clsx(inputClass, '!h-8 w-full text-[13px] sm:w-48')}
+              >
+                <option value="">All applications</option>
+                {apps.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+              <SearchInput value={q} onChange={setQ} placeholder="Filter by name…" />
+              <span className="text-xs text-fg-muted sm:ml-auto">
+                {shown.length} of {total} streams
+              </span>
+            </>
+          }
+        >
+          <Table>
+            <THead>
               <tr>
-                <th className="px-4 py-2 text-left font-medium">Name</th>
-                <th className="px-4 py-2 text-left font-medium">Status</th>
-                <th className="px-4 py-2 text-left font-medium">Outputs</th>
-                <th className="px-4 py-2 text-left font-medium">DVR</th>
-                <th className="px-4 py-2 text-left font-medium">Publish / Play</th>
-                <th className="px-4 py-2 text-right font-medium">Actions</th>
+                <TH {...sortProps('name')}>Name</TH>
+                <TH {...sortProps('status')}>Status</TH>
+                <TH>Outputs</TH>
+                <TH>DVR</TH>
+                <TH>Publish / Play</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800">
+            </THead>
+            <TBody>
+              {shown.length === 0 && (
+                <tr>
+                  <TD colSpan={6} muted className="py-8 text-center">
+                    {filtered ? 'No streams match the current filters.' : 'No streams.'}
+                  </TD>
+                </tr>
+              )}
               {shown.map((r) => {
                 const l = liveFor(r)
-                const id = r.cfg.id
-                const play = `${typeof window !== 'undefined' ? window.location.origin : ''}/${r.app.name}/${r.cfg.name_pattern}/playlist.m3u8`
                 const outs = (
                   [
                     ['HLS', r.cfg.out_hls],
@@ -176,86 +259,122 @@ function StreamConfigsContent() {
                     ['LL-HLS', r.cfg.out_ll_hls],
                   ] as const
                 ).filter(([, v]) => tri(v))
+                const name = `${r.app.name}/${r.cfg.name_pattern}`
                 return (
-                  <tr key={id} className="hover:bg-gray-800/20 transition">
-                    <td className="px-4 py-2.5">
-                      <div className="font-mono text-gray-100">
-                        <span className="text-gray-500">{r.app.name}/</span>
+                  <TR key={r.cfg.id}>
+                    <TD>
+                      <div className="whitespace-nowrap font-mono text-xs text-fg">
+                        <span className="text-fg-muted">{r.app.name}/</span>
                         {r.cfg.name_pattern}
                       </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex flex-wrap items-center gap-1">
+                    </TD>
+                    <TD>
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {!r.cfg.enabled ? (
-                          <Badge variant="gray">disabled</Badge>
+                          <StatusBadge status="disabled" />
                         ) : l.length > 0 ? (
-                          <Badge variant="green">
-                            live{r.cfg.is_wildcard ? ` · ${l.length}` : ''}
-                          </Badge>
+                          <StatusBadge status="live" label={`Live${r.cfg.is_wildcard ? ` · ${l.length}` : ''}`} />
                         ) : (
-                          <Badge variant="gray">idle</Badge>
+                          <StatusBadge status="idle" />
                         )}
-                        {r.cfg.is_wildcard && <Badge variant="purple">pattern</Badge>}
+                        {r.cfg.is_wildcard && (
+                          <Badge variant="purple" title="Pattern: matches any stream name that fits">
+                            pattern
+                          </Badge>
+                        )}
                       </div>
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-gray-400">
-                      {outs.length === 0
-                        ? 'app defaults'
-                        : outs.map(([n, v]) => `${n} ${tri(v)}`).join(' · ')}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-gray-400">
-                      {r.cfg.dvr_enabled === -1
-                        ? 'app default'
-                        : r.cfg.dvr_enabled === 1
-                          ? `on${r.cfg.dvr_window_s ? ` · ${r.cfg.dvr_window_s}s` : ''}`
-                          : 'off'}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs">
-                      {r.cfg.is_wildcard ? (
-                        <span className="text-gray-500">matches {r.cfg.name_pattern}</span>
+                    </TD>
+                    <TD>
+                      {outs.length === 0 ? (
+                        <span className="text-xs text-fg-muted">app defaults</span>
                       ) : (
-                        <div className="space-y-0.5 font-mono">
-                          <div className="text-gray-400">
-                            rtmp://&lt;host&gt;/{r.app.name}/{r.cfg.name_pattern}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => copy(play, id)}
-                            className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300"
-                            title={play}
-                          >
-                            {copied === id ? <Check size={11} /> : <Copy size={11} />}
-                            /{r.app.name}/{r.cfg.name_pattern}/playlist.m3u8
-                          </button>
+                        <div className="flex flex-wrap gap-1">
+                          {outs.map(([n, v]) => (
+                            <Badge key={n} variant={v === 1 ? 'green' : 'gray'} mono>
+                              {n} {tri(v)}
+                            </Badge>
+                          ))}
                         </div>
                       )}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <div className="inline-flex gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => setModal({ open: true, edit: r })}
-                          className="px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                          title="Edit"
-                        >
-                          <Pencil size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDel(r)}
-                          className="px-2 py-1 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-                          title="Delete"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                    </TD>
+                    <TD className="whitespace-nowrap text-xs">
+                      {r.cfg.dvr_enabled === -1 ? (
+                        <span className="text-fg-muted">app default</span>
+                      ) : r.cfg.dvr_enabled === 1 ? (
+                        `on${r.cfg.dvr_window_s ? ` · ${r.cfg.dvr_window_s}s` : ''}`
+                      ) : (
+                        'off'
+                      )}
+                    </TD>
+                    <TD>
+                      {r.cfg.is_wildcard ? (
+                        <span className="text-xs text-fg-muted">
+                          matches <code className="font-mono text-fg-secondary">{r.cfg.name_pattern}</code>
+                        </span>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-11 shrink-0 text-xs text-fg-muted">RTMP</span>
+                            <Truncate mono max="max-w-[220px]" className="min-w-0">
+                              {publishURL(r)}
+                            </Truncate>
+                            <CopyButton text={publishURL(r)} title="Copy RTMP publish URL" toastMessage="Publish URL copied" />
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-11 shrink-0 text-xs text-fg-muted">HLS</span>
+                            <Truncate mono max="max-w-[220px]" className="min-w-0" title={playURL(r)}>
+                              /{r.app.name}/{r.cfg.name_pattern}/playlist.m3u8
+                            </Truncate>
+                            <CopyButton text={playURL(r)} title="Copy HLS playback URL" toastMessage="Playback URL copied" />
+                          </div>
+                        </div>
+                      )}
+                    </TD>
+                    <TD align="right">
+                      <RowActions>
+                        <IconButton label={`Edit ${name}`} size="xs" onClick={() => setModal({ open: true, edit: r })}>
+                          <Pencil size={14} />
+                        </IconButton>
+                        <DropdownMenu
+                          label={`More actions for ${name}`}
+                          items={[
+                            ...(r.cfg.is_wildcard
+                              ? []
+                              : [
+                                  {
+                                    label: 'Open HLS playlist',
+                                    icon: <ExternalLink size={14} />,
+                                    href: `/${r.app.name}/${r.cfg.name_pattern}/playlist.m3u8`,
+                                    external: true,
+                                  },
+                                  {
+                                    label: 'Copy publish URL',
+                                    icon: <Copy size={14} />,
+                                    onClick: () => copyFromMenu(publishURL(r), 'Publish URL'),
+                                  },
+                                  {
+                                    label: 'Copy playback URL',
+                                    icon: <Copy size={14} />,
+                                    onClick: () => copyFromMenu(playURL(r), 'Playback URL'),
+                                  },
+                                ]),
+                            {
+                              label: 'Delete stream',
+                              icon: <Trash2 size={14} />,
+                              danger: true,
+                              separator: !r.cfg.is_wildcard,
+                              onClick: () => setDel(r),
+                            },
+                          ]}
+                        />
+                      </RowActions>
+                    </TD>
+                  </TR>
                 )
               })}
-            </tbody>
-          </table>
-        </div>
+            </TBody>
+          </Table>
+        </TableCard>
       )}
 
       <StreamConfigModal
@@ -264,6 +383,7 @@ function StreamConfigsContent() {
         edit={modal.edit?.cfg ?? null}
         onClose={() => setModal({ open: false, edit: null })}
         onSaved={() => {
+          toast.success(modal.edit ? `Saved ${modal.edit.app.name}/${modal.edit.cfg.name_pattern}` : 'Stream added')
           setModal({ open: false, edit: null })
           mutate()
         }}
@@ -277,10 +397,11 @@ function StreamConfigsContent() {
         onConfirm={async () => {
           if (!del) return
           await deleteStreamConfig(del.app.id, del.cfg.id)
+          toast.success(`Deleted ${del.app.name}/${del.cfg.name_pattern}`)
           setDel(null)
           mutate()
         }}
       />
-    </div>
+    </>
   )
 }

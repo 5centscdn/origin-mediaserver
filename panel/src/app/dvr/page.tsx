@@ -2,16 +2,38 @@
 
 import { useState, useEffect } from 'react'
 import useSWR from 'swr'
-import { HardDrive, Copy, Check, Loader2 } from 'lucide-react'
+import { HardDrive, Pencil } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
-import { Badge } from '@/components/Badge'
 import {
   FormField,
   inputClass,
   ModalActions,
   ErrorBox,
+  CheckboxField,
 } from '@/components/FormHelpers'
+import {
+  PageHeader,
+  Card,
+  CardHeader,
+  DescriptionList,
+  DescriptionRow,
+  Button,
+  TableCard,
+  Table,
+  THead,
+  TH,
+  TBody,
+  TR,
+  TD,
+  RowActions,
+  CopyButton,
+  EmptyState,
+  TableSkeleton,
+  StatusBadge,
+  StatusDot,
+  useToast,
+} from '@/components/ui'
 import {
   listStreams,
   getStreamDVR,
@@ -20,7 +42,7 @@ import {
   DVRInfo,
   Stream,
 } from '@/lib/api'
-import { formatBytes, formatRelativeMs, formatDuration, copyToClipboard } from '@/lib/utils'
+import { formatBytes, formatRelativeMs, formatDuration } from '@/lib/utils'
 
 export default function DVRPage() {
   return (
@@ -36,14 +58,14 @@ interface Row {
 }
 
 function DVRContent() {
-  const { data: streams } = useSWR('streams', listStreams, {
+  const { data: streams, error: streamsErr } = useSWR('streams', listStreams, {
     refreshInterval: 10000,
   })
   const { data: node, mutate: refreshNode } = useSWR('node', getNodeInfo, {
     refreshInterval: 30000,
   })
   const [editConfig, setEditConfig] = useState(false)
-  const [copied, setCopied] = useState<string | null>(null)
+  const toast = useToast()
 
   // Fetch DVR info for each stream.
   const { data: rows } = useSWR(
@@ -63,181 +85,199 @@ function DVRContent() {
     { refreshInterval: 10000 },
   )
 
+  // Skeleton only on the very first load; later key changes (a stream
+  // joining or leaving) keep showing the table/empty state.
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    if (rows) setLoaded(true)
+  }, [rows])
+  const loading = !loaded && !streamsErr
+
   const list = rows ?? []
 
   // nDVR URLs: the whole rewind window as a live playlist/manifest the
   // player can seek back through. Range/timeshift variants are listed in
-  // the help box above the table.
-  const copyRewind = async (s: Stream, kind: 'hls' | 'dash') => {
-    const file = kind === 'hls' ? 'playlist_dvr.m3u8' : 'manifest_dvr.mpd'
-    const url = `${window.location.origin}/${s.app}/${s.name}/${file}`
-    if (await copyToClipboard(url)) {
-      setCopied(`${s.id}:${kind}`)
-      setTimeout(() => setCopied(null), 1500)
-    }
-  }
+  // the Rewind URLs card.
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const rewindURL = (s: Stream, kind: 'hls' | 'dash') =>
+    `${origin}/${s.app}/${s.name}/${kind === 'hls' ? 'playlist_dvr.m3u8' : 'manifest_dvr.mpd'}`
 
   const dvrCfg = node?.dvr ?? {}
+  const recordingCount = list.filter((r) => r.dvr && r.dvr.segment_count > 0).length
 
   return (
-    <div className="space-y-6 max-w-7xl">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">DVR</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Time-shifted recording and playback
-        </p>
-      </div>
+    <>
+      <PageHeader
+        title="DVR"
+        description="Time-shifted recording and rewind playback (nDVR) for live streams."
+      />
 
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-medium text-gray-200">DVR Configuration</h2>
-          <button
-            type="button"
-            onClick={() => setEditConfig(true)}
-            className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-          >
-            Edit
-          </button>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
-          <Info label="Enabled">
+      <Card className="max-w-4xl">
+        <CardHeader
+          icon={<HardDrive size={18} />}
+          title="DVR configuration"
+          description="Global switch records every stream. To record only some, leave it off and enable nDVR per application (Applications page) or per stream config."
+          actions={
+            <Button size="sm" variant="secondary" icon={<Pencil size={14} />} onClick={() => setEditConfig(true)}>
+              Edit
+            </Button>
+          }
+        />
+        <DescriptionList>
+          <DescriptionRow label="Record all streams">
             {dvrCfg.enabled ? (
-              <Badge variant="green">on</Badge>
+              <StatusBadge status="success" label="Enabled" />
             ) : (
-              <Badge variant="gray">off</Badge>
+              <StatusBadge status="disabled" label="Disabled" />
             )}
-          </Info>
-          <Info label="Storage path">
-            <span className="text-gray-300 font-mono text-xs truncate block">
-              {dvrCfg.storage_path ?? '—'}
-            </span>
-          </Info>
-          <Info label="Window">
-            <span className="text-gray-300">
+          </DescriptionRow>
+          <DescriptionRow label="Default rewind window">
+            <span className="tabular">
               {dvrCfg.window_seconds
                 ? `${dvrCfg.window_seconds}s (${Math.round((dvrCfg.window_seconds ?? 0) / 60)}m)`
                 : '—'}
             </span>
-          </Info>
-          <Info label="Streams with DVR">
-            <span className="text-gray-300">
-              {list.filter((r) => r.dvr && r.dvr.segment_count > 0).length}
-            </span>
-          </Info>
-        </div>
-        <p className="text-xs text-gray-500 mt-3">
-          Global switch records every stream. To record only some, leave it off and enable
-          nDVR per application (Applications page) or per stream config.
-        </p>
-      </div>
+          </DescriptionRow>
+          <DescriptionRow label="Storage path">
+            <code className="block break-all font-mono text-[13px] text-fg-secondary">
+              {dvrCfg.storage_path ?? '—'}
+            </code>
+          </DescriptionRow>
+          <DescriptionRow label="Streams with DVR">
+            <span className="tabular">{recordingCount}</span>
+          </DescriptionRow>
+        </DescriptionList>
+      </Card>
 
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-4">
-        <h2 className="text-sm font-medium text-gray-200 mb-2">Rewind URLs</h2>
-        <div className="space-y-1 text-xs font-mono text-gray-300 break-all">
-          <div>
-            <span className="text-gray-500">whole window (live): </span>
-            /&lt;app&gt;/&lt;stream&gt;/playlist_dvr.m3u8 · manifest_dvr.mpd
-          </div>
-          <div>
-            <span className="text-gray-500">time range (VOD): </span>
-            /&lt;app&gt;/&lt;stream&gt;/playlist_dvr_range-&lt;unix_from&gt;-&lt;seconds&gt;.m3u8 ·
-            manifest_dvr_range-…mpd
-          </div>
-          <div>
-            <span className="text-gray-500">delayed live: </span>
-            /&lt;app&gt;/&lt;stream&gt;/playlist_dvr_timeshift-&lt;delay_s&gt;[-&lt;depth_s&gt;].m3u8 ·
-            manifest_dvr_timeshift-…mpd
-          </div>
-        </div>
-      </div>
+      <Card className="max-w-4xl">
+        <CardHeader
+          title="Rewind URLs"
+          description="Append these to the server origin. Use the per-stream copy buttons below for the whole-window URLs."
+        />
+        <DescriptionList>
+          <DescriptionRow label="Whole window (live)">
+            <UrlTemplates
+              items={['/<app>/<stream>/playlist_dvr.m3u8', '/<app>/<stream>/manifest_dvr.mpd']}
+            />
+          </DescriptionRow>
+          <DescriptionRow label="Time range (VOD)">
+            <UrlTemplates
+              items={[
+                '/<app>/<stream>/playlist_dvr_range-<unix_from>-<seconds>.m3u8',
+                '/<app>/<stream>/manifest_dvr_range-…mpd',
+              ]}
+            />
+          </DescriptionRow>
+          <DescriptionRow label="Delayed live">
+            <UrlTemplates
+              items={[
+                '/<app>/<stream>/playlist_dvr_timeshift-<delay_s>[-<depth_s>].m3u8',
+                '/<app>/<stream>/manifest_dvr_timeshift-…mpd',
+              ]}
+            />
+          </DescriptionRow>
+        </DescriptionList>
+      </Card>
 
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-medium text-gray-200">Active recordings</h2>
-          <span className="text-xs text-gray-500">Auto-refresh 10s</span>
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <h2 className="text-base font-semibold text-fg">Active recordings</h2>
+          <span className="text-xs text-fg-muted">Auto-refresh 10s</span>
         </div>
-        {list.length === 0 ? (
-          <div className="rounded-lg border border-gray-800 bg-gray-900 p-12 text-center">
-            <HardDrive className="mx-auto text-gray-600 mb-3" size={32} />
-            <div className="text-sm text-gray-400">No streams with DVR data</div>
-          </div>
+        {loading ? (
+          <TableSkeleton rows={3} cols={7} />
+        ) : list.length === 0 ? (
+          <TableCard>
+            <EmptyState
+              icon={<HardDrive size={20} />}
+              title="No streams with DVR data"
+              description="Recordings show up here while a stream with nDVR enabled (globally, per application or per stream config) is live."
+              action={
+                <Button size="sm" variant="secondary" icon={<Pencil size={14} />} onClick={() => setEditConfig(true)}>
+                  Edit DVR config
+                </Button>
+              }
+            />
+          </TableCard>
         ) : (
-          <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-800/50 text-xs uppercase tracking-wider text-gray-500">
+          <TableCard>
+            <Table>
+              <THead>
                 <tr>
-                  <th className="px-4 py-2 text-left font-medium">Stream</th>
-                  <th className="px-4 py-2 text-left font-medium">Oldest</th>
-                  <th className="px-4 py-2 text-left font-medium">Newest</th>
-                  <th className="px-4 py-2 text-left font-medium">Window</th>
-                  <th className="px-4 py-2 text-left font-medium">Segments</th>
-                  <th className="px-4 py-2 text-left font-medium">Size</th>
-                  <th className="px-4 py-2 text-right font-medium">Actions</th>
+                  <TH>Stream</TH>
+                  <TH>Status</TH>
+                  <TH>Oldest</TH>
+                  <TH>Newest</TH>
+                  <TH align="right">Window</TH>
+                  <TH align="right">Segments</TH>
+                  <TH align="right">Size</TH>
+                  <TH align="right">
+                    <span className="sr-only">Actions</span>
+                  </TH>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800">
+              </THead>
+              <TBody>
                 {list.map(({ stream, dvr }) => {
                   const window =
-                    dvr && dvr.newest_ms && dvr.oldest_ms
-                      ? dvr.newest_ms - dvr.oldest_ms
-                      : 0
+                    dvr && dvr.newest_ms && dvr.oldest_ms ? dvr.newest_ms - dvr.oldest_ms : 0
+                  const recording = !!dvr && dvr.segment_count > 0
                   return (
-                    <tr key={stream.id} className="hover:bg-gray-800/30 transition">
-                      <td className="px-4 py-2.5 text-white font-medium">
-                        {stream.app}/{stream.name}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-300 text-xs">
-                        {dvr?.oldest_ms
-                          ? formatRelativeMs(dvr.oldest_ms)
-                          : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-300 text-xs">
-                        {dvr?.newest_ms
-                          ? formatRelativeMs(dvr.newest_ms)
-                          : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-300">
+                    <TR key={stream.id}>
+                      <TD>
+                        <div className="flex items-center gap-2.5">
+                          <StatusDot status="live" />
+                          <span className="font-medium text-fg">
+                            {stream.app}/{stream.name}
+                          </span>
+                        </div>
+                      </TD>
+                      <TD>
+                        {recording ? (
+                          <StatusBadge status="success" label="Recording" />
+                        ) : (
+                          <StatusBadge status="idle" label="No DVR data" />
+                        )}
+                      </TD>
+                      <TD className="whitespace-nowrap">
+                        {dvr?.oldest_ms ? formatRelativeMs(dvr.oldest_ms) : '—'}
+                      </TD>
+                      <TD className="whitespace-nowrap">
+                        {dvr?.newest_ms ? formatRelativeMs(dvr.newest_ms) : '—'}
+                      </TD>
+                      <TD numeric>
                         {window ? formatDuration(window) : '—'}
                         {dvr?.window_s ? (
-                          <span className="text-gray-500 text-xs"> / {formatDuration(dvr.window_s * 1000)}</span>
+                          <span className="text-fg-muted"> / {formatDuration(dvr.window_s * 1000)}</span>
                         ) : null}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-300">
-                        {dvr?.segment_count ?? 0}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-300">
-                        {dvr ? formatBytes(dvr.total_bytes) : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 text-right whitespace-nowrap space-x-1">
-                        {(['hls', 'dash'] as const).map((kind) => (
-                          <button
-                            key={kind}
-                            type="button"
-                            onClick={() => copyRewind(stream, kind)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                          >
-                            {copied === `${stream.id}:${kind}` ? (
-                              <>
-                                <Check size={12} className="text-green-400" />
-                                Copied
-                              </>
-                            ) : (
-                              <>
-                                <Copy size={12} />
-                                {kind === 'hls' ? 'HLS' : 'DASH'} rewind
-                              </>
-                            )}
-                          </button>
-                        ))}
-                      </td>
-                    </tr>
+                      </TD>
+                      <TD numeric>{dvr?.segment_count ?? 0}</TD>
+                      <TD numeric>{dvr ? formatBytes(dvr.total_bytes) : '—'}</TD>
+                      <TD align="right">
+                        <RowActions>
+                          <CopyButton
+                            text={rewindURL(stream, 'hls')}
+                            label="HLS rewind"
+                            variant="secondary"
+                            title="Copy HLS rewind URL (whole window, live)"
+                            toastMessage="HLS rewind URL copied"
+                          />
+                          <CopyButton
+                            text={rewindURL(stream, 'dash')}
+                            label="DASH rewind"
+                            variant="secondary"
+                            title="Copy DASH rewind URL (whole window, live)"
+                            toastMessage="DASH rewind URL copied"
+                          />
+                        </RowActions>
+                      </TD>
+                    </TR>
                   )
                 })}
-              </tbody>
-            </table>
-          </div>
+              </TBody>
+            </Table>
+          </TableCard>
         )}
-      </div>
+      </section>
 
       <DVRConfigModal
         open={editConfig}
@@ -246,20 +286,23 @@ function DVRContent() {
         onClose={() => setEditConfig(false)}
         onSaved={() => {
           setEditConfig(false)
+          toast.success('DVR config saved')
           refreshNode()
         }}
       />
-    </div>
+    </>
   )
 }
 
-function Info({ label, children }: { label: string; children: React.ReactNode }) {
+// UrlTemplates lists the HLS and DASH forms of one rewind URL pattern.
+function UrlTemplates({ items }: { items: string[] }) {
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">
-        {label}
-      </div>
-      <div>{children}</div>
+    <div className="space-y-1">
+      {items.map((t) => (
+        <code key={t} className="block break-all font-mono text-xs text-fg-secondary">
+          {t}
+        </code>
+      ))}
     </div>
   )
 }
@@ -308,24 +351,18 @@ function DVRConfigModal({
       open={open}
       onClose={() => !busy && onClose()}
       title="Edit DVR config"
+      description="Global nDVR settings. Applications and stream configs can override them."
     >
-      <form onSubmit={onSubmit} className="space-y-3">
-        <label className="flex items-start gap-2 text-sm text-gray-300">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          <span>
-            Record all streams
-            <span className="block text-gray-500 text-xs">
-              Applies to streams that start (or are reloaded) after saving
-            </span>
-          </span>
-        </label>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <CheckboxField
+          checked={enabled}
+          onChange={setEnabled}
+          label="Record all streams"
+          description="Applies to streams that start (or are reloaded) after saving"
+        />
         <FormField
           label="Window seconds"
+          required
           hint="Default rewind window. Apps and stream configs can override it. Older data is pruned."
         >
           <input

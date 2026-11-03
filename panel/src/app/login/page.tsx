@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { Loader2 } from 'lucide-react'
 import { login, restoreAuth, getToken } from '@/lib/api'
+import { FormField, inputClass, ErrorBox } from '@/components/FormHelpers'
+import { Button } from '@/components/ui'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -34,64 +35,55 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950 px-4">
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-10">
       <div className="w-full max-w-sm">
-        <div className="flex flex-col items-center mb-6">
+        <div className="mb-6 flex flex-col items-center text-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.svg" alt="5centscdn" className="h-10 w-auto mb-3" />
-          <h1 className="text-xl font-semibold text-white">Origin Media Server</h1>
-          <p className="text-sm text-gray-500 mt-1">Sign in to the control panel</p>
+          <img src="/logo.svg" alt="5centscdn" className="mb-4 h-10 w-auto" />
+          <h1 className="text-xl font-semibold tracking-tight text-fg">Origin Media Server</h1>
+          <p className="mt-1 text-sm text-fg-muted">Sign in to the control panel</p>
         </div>
 
         <form
           onSubmit={onSubmit}
-          className="bg-gray-900 border border-gray-800 rounded-lg p-6 space-y-4"
+          className="space-y-4 rounded-xl border border-border bg-surface p-6 shadow-pop"
+          aria-label="Sign in"
         >
-          <div>
-            <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              Email
-            </label>
+          <FormField label="Email">
             <input
               type="email"
               required
               autoFocus
+              autoComplete="username"
+              aria-label="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className={inputClass}
               placeholder="admin@example.com"
             />
-          </div>
-          <div>
-            <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              Password
-            </label>
+          </FormField>
+          <FormField label="Password">
             <input
               type="password"
               required
+              autoComplete="current-password"
+              aria-label="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className={inputClass}
               placeholder="••••••••"
             />
-          </div>
-          {error && (
-            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2">
-              {error}
-            </div>
-          )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium py-2 rounded transition flex items-center justify-center gap-2"
-          >
-            {loading && <Loader2 size={14} className="animate-spin" />}
-            Sign in
-          </button>
+          </FormField>
+          <ErrorBox msg={error} />
+          <Button type="submit" variant="primary" size="md" loading={loading} className="w-full">
+            {loading ? 'Signing in…' : 'Sign in'}
+          </Button>
         </form>
 
-        <div className="text-center text-xs text-gray-600 mt-4">
-          Default admin: admin@example.com / admin
-        </div>
+        <p className="mt-4 text-center text-xs text-fg-muted">
+          Default admin: <span className="font-mono">admin@example.com</span> /{' '}
+          <span className="font-mono">admin</span>
+        </p>
       </div>
     </div>
   )

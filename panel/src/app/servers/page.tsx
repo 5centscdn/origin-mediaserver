@@ -2,25 +2,21 @@
 
 import { useEffect, useState } from 'react'
 import useSWR from 'swr'
-import {
-  Plus,
-  Trash2,
-  Server as ServerIcon,
-  CheckCircle2,
-  XCircle,
-  Radio,
-} from 'lucide-react'
+import clsx from 'clsx'
+import { Plus, Trash2, Server as ServerIcon, Radio, Plug, Tag, Copy as CopyIcon } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
 import {
   FormField,
   inputClass,
+  textareaClass,
   ModalActions,
   ErrorBox,
   ConfirmDelete,
   useStateReset,
 } from '@/components/FormHelpers'
+import { PageHeader, Button, IconButton, CopyButton, StatusBadge, Skeleton, useToast } from '@/components/ui'
 import {
   listServers,
   addServer,
@@ -32,6 +28,12 @@ import {
   ServerEntry,
   NodeInfo,
 } from '@/lib/api'
+
+// normURL compares server URLs loosely (case, trailing slashes), the same
+// way setActiveServer strips trailing slashes before using one.
+function normURL(u: string): string {
+  return u.trim().replace(/\/+$/, '').toLowerCase()
+}
 
 export default function ServersPage() {
   return (
@@ -48,13 +50,16 @@ function ServersContent() {
   const { data: localNode } = useSWR('node', getNodeInfo, {
     refreshInterval: 10000,
   })
+  const toast = useToast()
   const [newOpen, setNewOpen] = useState(false)
   const [deleting, setDeleting] = useState<ServerEntry | null>(null)
   const [activeUrl, setActiveUrl] = useState<string | null>(null)
+  const [origin, setOrigin] = useState('')
 
   useEffect(() => {
     const s = getActiveServer()
     setActiveUrl(s?.url ?? null)
+    setOrigin(window.location.origin)
   }, [])
 
   const localCard: ServerEntry = {
@@ -81,39 +86,55 @@ function ServersContent() {
     window.location.reload()
   }
 
-  const isActive = (s: ServerEntry) =>
-    s.is_local ? activeUrl === null : s.url === activeUrl
+  const isActive = (s: ServerEntry) => (s.is_local ? activeUrl === null : s.url === activeUrl)
+
+  // duplicateOf names the entry a saved server repeats: this server when the
+  // URL is this panel's own origin, else the first earlier entry with the
+  // same URL. Display only; records are left as they are.
+  const duplicateOf = (s: ServerEntry, idx: number): string | null => {
+    if (s.is_local || !s.url) return null
+    const u = normURL(s.url)
+    if (origin && u === normURL(origin)) return localCard.name
+    const prev = servers.slice(1, idx).find((o) => o.url && normURL(o.url) === u)
+    return prev ? prev.name : null
+  }
 
   return (
-    <div className="space-y-6 max-w-7xl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Servers</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage multiple origin servers from a single panel
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setNewOpen(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-        >
-          <Plus size={16} />
-          Add Server
-        </button>
-      </div>
+    <>
+      <PageHeader
+        title="Servers"
+        description="Manage multiple origin servers from a single panel. Connecting switches every page to that server."
+        actions={
+          <Button variant="primary" icon={<Plus size={15} />} onClick={() => setNewOpen(true)}>
+            Add server
+          </Button>
+        }
+      />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {servers.map((s) => (
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {servers.map((s, i) => (
           <ServerCard
             key={s.id}
             server={s}
+            origin={origin}
             active={isActive(s)}
+            duplicateOf={duplicateOf(s, i)}
             localInfo={s.is_local ? localNode : undefined}
             onConnect={() => onConnect(s)}
             onDelete={() => setDeleting(s)}
           />
         ))}
+        <button
+          type="button"
+          onClick={() => setNewOpen(true)}
+          className="flex min-h-[200px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong bg-transparent p-5 text-fg-muted transition-colors hover:border-primary/60 hover:bg-elevated/40 hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-fg"
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-elevated">
+            <Plus size={18} />
+          </span>
+          <span className="text-sm font-medium">Add server</span>
+          <span className="text-xs">Register another origin by its HTTP URL</span>
+        </button>
       </div>
 
       <AddServerModal
@@ -121,6 +142,7 @@ function ServersContent() {
         onClose={() => setNewOpen(false)}
         onSaved={() => {
           setNewOpen(false)
+          toast.success('Server added')
           mutate()
         }}
       />
@@ -139,23 +161,28 @@ function ServersContent() {
             setActiveServer(null)
             setActiveUrl(null)
           }
+          toast.success(`Removed ${deleting.name}`)
           setDeleting(null)
           mutate()
         }}
       />
-    </div>
+    </>
   )
 }
 
 function ServerCard({
   server,
+  origin,
   active,
+  duplicateOf,
   localInfo,
   onConnect,
   onDelete,
 }: {
   server: ServerEntry
+  origin: string
   active: boolean
+  duplicateOf: string | null
   localInfo?: NodeInfo
   onConnect: () => void
   onDelete: () => void
@@ -185,112 +212,107 @@ function ServerCard({
     }
   }, [server.id, server.url, server.is_local, localInfo])
 
-  const dot =
-    status.state === 'ok'
-      ? 'bg-green-500'
-      : status.state === 'fail'
-        ? 'bg-red-500'
-        : 'bg-gray-500 animate-pulse'
+  const shownURL = server.url || origin
 
   return (
     <div
-      className={
-        'rounded-lg border bg-gray-900 p-4 transition ' +
-        (active ? 'border-blue-500 ring-1 ring-blue-500/30' : 'border-gray-800')
-      }
-    >
-      <div className="flex items-start justify-between gap-2 mb-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <ServerIcon size={16} className="text-blue-400 flex-shrink-0" />
-            <h3 className="text-white font-medium truncate">{server.name}</h3>
-            {server.is_local && <Badge variant="blue">this server</Badge>}
-            {active && !server.is_local && <Badge variant="green">active</Badge>}
-          </div>
-          <div className="text-xs text-gray-500 mt-1 truncate font-mono">
-            {server.url || 'same origin'}
-          </div>
-        </div>
-        <span className={'inline-block h-2.5 w-2.5 rounded-full ' + dot} />
-      </div>
-
-      {server.note && (
-        <div className="text-xs text-gray-400 mb-3 line-clamp-2">{server.note}</div>
+      className={clsx(
+        'flex flex-col rounded-lg border bg-surface transition-colors',
+        active ? 'border-primary ring-1 ring-primary/30' : 'border-border',
       )}
-
-      <div className="grid grid-cols-2 gap-2 text-xs mb-4">
-        <div>
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider">
-            Status
-          </div>
-          <div className="flex items-center gap-1 mt-0.5">
-            {status.state === 'ok' ? (
-              <>
-                <CheckCircle2 size={12} className="text-green-400" />
-                <span className="text-green-400">Online</span>
-              </>
-            ) : status.state === 'fail' ? (
-              <>
-                <XCircle size={12} className="text-red-400" />
-                <span className="text-red-400">Unreachable</span>
-              </>
-            ) : (
-              <span className="text-gray-500">Checking…</span>
+    >
+      <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div
+            className={clsx(
+              'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border',
+              active ? 'border-primary/40 bg-primary/15 text-primary-fg' : 'border-border bg-elevated text-fg-muted',
             )}
+          >
+            <ServerIcon size={17} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="truncate text-[15px] font-semibold leading-6 text-fg" title={server.name}>
+              {server.name}
+            </h3>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {server.is_local && <Badge variant="blue">This server</Badge>}
+              {active && <StatusBadge status="success" label="Connected" />}
+              {duplicateOf && (
+                <Badge variant="yellow" title="Another entry points to the same URL">
+                  <CopyIcon size={11} />
+                  Duplicate of {duplicateOf}
+                </Badge>
+              )}
+            </div>
           </div>
         </div>
-        <div>
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider">
-            Streams
-          </div>
-          <div className="flex items-center gap-1 mt-0.5 text-gray-300">
-            <Radio size={11} />
-            {status.info?.stream_count ?? '—'}
-          </div>
-        </div>
-        <div className="col-span-2">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider">
-            Version
-          </div>
-          <div className="text-gray-300 mt-0.5">
-            {status.info?.version ?? '—'}
-          </div>
-        </div>
+        {status.state === 'ok' ? (
+          <StatusBadge status="online" />
+        ) : status.state === 'fail' ? (
+          <StatusBadge status="offline" label="Unreachable" />
+        ) : (
+          <StatusBadge status="idle" label="Checking…" />
+        )}
       </div>
 
-      <div className="flex gap-2">
-        <button
-          type="button"
+      <div className="flex-1 space-y-4 px-5 py-4">
+        <div className="flex min-w-0 items-center gap-1">
+          <code
+            className="min-w-0 flex-1 truncate font-mono text-xs text-fg-secondary"
+            title={shownURL || 'same origin'}
+          >
+            {shownURL || 'same origin'}
+          </code>
+          {shownURL && <CopyButton text={shownURL} title="Copy server URL" toastMessage="Server URL copied" />}
+        </div>
+
+        {server.note && <p className="line-clamp-2 text-[13px] text-fg-muted">{server.note}</p>}
+
+        <dl className="grid grid-cols-2 gap-3">
+          <div className="rounded-md border border-border bg-canvas/40 px-3 py-2">
+            <dt className="flex items-center gap-1.5 text-xs text-fg-muted">
+              <Radio size={12} />
+              Streams
+            </dt>
+            <dd className="tabular mt-0.5 text-lg font-semibold text-fg">
+              {status.state === 'pending' ? <Skeleton className="mt-1 h-5 w-8" /> : status.info?.stream_count ?? '—'}
+            </dd>
+          </div>
+          <div className="min-w-0 rounded-md border border-border bg-canvas/40 px-3 py-2">
+            <dt className="flex items-center gap-1.5 text-xs text-fg-muted">
+              <Tag size={12} />
+              Version
+            </dt>
+            <dd className="mt-1 truncate font-mono text-[13px] text-fg" title={status.info?.version}>
+              {status.state === 'pending' ? <Skeleton className="mt-1 h-4 w-16" /> : status.info?.version ?? '—'}
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-border px-5 py-3">
+        <Button
+          variant={active ? 'secondary' : 'primary'}
+          size="sm"
+          className="flex-1"
+          icon={<Plug size={14} />}
           onClick={onConnect}
           disabled={active}
-          className="flex-1 px-2 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition"
         >
           {active ? 'Connected' : 'Connect'}
-        </button>
+        </Button>
         {!server.is_local && (
-          <button
-            type="button"
-            onClick={onDelete}
-            className="px-2 py-1.5 text-xs rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-            title="Remove from list"
-          >
-            <Trash2 size={12} />
-          </button>
+          <IconButton label={`Remove ${server.name} from list`} variant="danger-outline" size="sm" onClick={onDelete}>
+            <Trash2 size={14} />
+          </IconButton>
         )}
       </div>
     </div>
   )
 }
 
-function AddServerModal({
-  open,
-  onClose,
-  onSaved,
-}: {
-  open: boolean
-  onClose: () => void
-  onSaved: () => void
-}) {
+function AddServerModal({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({ name: '', url: '', note: '' })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -317,9 +339,14 @@ function AddServerModal({
   }
 
   return (
-    <Modal open={open} onClose={() => !busy && onClose()} title="Add server">
-      <form onSubmit={onSubmit} className="space-y-3">
-        <FormField label="Name">
+    <Modal
+      open={open}
+      onClose={() => !busy && onClose()}
+      title="Add server"
+      description="Register another origin so you can switch to it from this panel."
+    >
+      <form onSubmit={onSubmit} className="space-y-4">
+        <FormField label="Name" required>
           <input
             required
             value={form.name}
@@ -328,13 +355,13 @@ function AddServerModal({
             placeholder="EU origin 2"
           />
         </FormField>
-        <FormField label="URL" hint="The HTTP base URL of the remote server">
+        <FormField label="URL" required hint="The HTTP base URL of the remote server">
           <input
             required
             type="url"
             value={form.url}
             onChange={(e) => setForm({ ...form, url: e.target.value })}
-            className={inputClass}
+            className={inputClass + ' font-mono text-[13px]'}
             placeholder="http://server2.example.com:8080"
           />
         </FormField>
@@ -342,7 +369,7 @@ function AddServerModal({
           <textarea
             value={form.note}
             onChange={(e) => setForm({ ...form, note: e.target.value })}
-            className={inputClass}
+            className={textareaClass.replace(' font-mono text-xs', ' text-sm')}
             rows={2}
             placeholder="Optional description"
           />

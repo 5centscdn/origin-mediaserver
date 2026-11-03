@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import React, { useState } from 'react'
 import useSWR from 'swr'
 import {
   Plus,
@@ -9,20 +9,46 @@ import {
   ChevronDown,
   ChevronRight,
   AppWindow,
+  Eye,
+  EyeOff,
+  Copy,
+  ListPlus,
 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { StreamConfigModal } from '@/components/StreamConfigModal'
 import { Modal } from '@/components/Modal'
-import { Badge } from '@/components/Badge'
+import { Badge, BadgeVariant } from '@/components/Badge'
 import {
   FormField,
+  FormSection,
   inputClass,
   ModalActions,
   ErrorBox,
   ConfirmDelete,
   useStateReset,
 } from '@/components/FormHelpers'
-import { listenPort } from '@/lib/utils'
+import {
+  PageHeader,
+  TableCard,
+  Table,
+  THead,
+  TH,
+  TBody,
+  TR,
+  TD,
+  RowActions,
+  Button,
+  IconButton,
+  CopyButton,
+  CopyField,
+  DropdownMenu,
+  EmptyState,
+  TableSkeleton,
+  StatusBadge,
+  Toggle,
+  useToast,
+} from '@/components/ui'
+import { listenPort, copyToClipboard } from '@/lib/utils'
 import {
   listApplications,
   createApplication,
@@ -51,35 +77,64 @@ function maskKey(key: string): string {
   return key.slice(0, 3) + '•'.repeat(Math.min(key.length - 3, 8))
 }
 
+// One badge color per meaning: delivery protocols are info, DVB-DASH
+// extras (profile signalling, EBU-TT-D subtitles) are the primary accent,
+// recording (nDVR) is warning.
+const OUTPUT_PROTOCOL: BadgeVariant = 'blue'
+const OUTPUT_DVB: BadgeVariant = 'purple'
+const OUTPUT_RECORD: BadgeVariant = 'yellow'
+
 function protocolChips(app: Application) {
-  const chips: { label: string; on: boolean; color: string }[] = [
-    { label: 'HLS', on: app.out_hls, color: 'blue' },
-    { label: 'DASH', on: app.out_dash, color: 'purple' },
-    { label: 'MPEG-TS', on: app.out_mpegts, color: 'orange' },
-    { label: 'LL-HLS', on: app.out_ll_hls, color: 'green' },
-    { label: 'DVB-DASH', on: app.dvb_dash_enabled, color: 'purple' },
-    { label: 'EBU-TT-D', on: app.dvb_subtitles_enabled, color: 'green' },
-    { label: 'nDVR', on: app.dvr_enabled, color: 'orange' },
+  const chips: { label: string; on: boolean; color: BadgeVariant }[] = [
+    { label: 'HLS', on: app.out_hls, color: OUTPUT_PROTOCOL },
+    { label: 'DASH', on: app.out_dash, color: OUTPUT_PROTOCOL },
+    { label: 'MPEG-TS', on: app.out_mpegts, color: OUTPUT_PROTOCOL },
+    { label: 'LL-HLS', on: app.out_ll_hls, color: OUTPUT_PROTOCOL },
+    { label: 'DVB-DASH', on: app.dvb_dash_enabled, color: OUTPUT_DVB },
+    { label: 'EBU-TT-D', on: app.dvb_subtitles_enabled, color: OUTPUT_DVB },
+    { label: 'nDVR', on: app.dvr_enabled, color: OUTPUT_RECORD },
   ]
   return chips.filter((c) => c.on)
 }
 
-type TriState = -1 | 0 | 1
+function OutputBadges({ app }: { app: Application }) {
+  const chips = protocolChips(app)
+  if (chips.length === 0) return <span className="text-xs text-fg-muted">none</span>
+  return (
+    <div className="flex flex-wrap gap-1">
+      {chips.map((c) => (
+        <Badge key={c.label} variant={c.color} mono>
+          {c.label}
+        </Badge>
+      ))}
+    </div>
+  )
+}
 
-function triLabel(v: TriState, inheritLabel: string): string {
-  if (v === -1) return inheritLabel
-  if (v === 1) return 'Enabled'
-  return 'Disabled'
+// RTMP/SRT publish addresses for an app. The host is the one this panel is
+// served from (the encoder may need a different, public name); the port
+// comes from the node's listen config.
+function publishURLs(appName: string, node: Awaited<ReturnType<typeof getNodeInfo>> | undefined) {
+  const host = typeof window !== 'undefined' ? window.location.hostname : '<host>'
+  return {
+    rtmp: `rtmp://${host}${listenPort(node?.rtmp_listen, ':1935')}/${appName}`,
+    srt: node?.srt?.enabled
+      ? `srt://${host}${listenPort(node?.srt?.listen, ':4000')}?streamid=${appName}/<stream>`
+      : null,
+  }
 }
 
 // ---------- main content ----------
 
 function ApplicationsContent() {
-  const { data: apps, mutate: refreshApps } = useSWR(
+  const { data: apps, mutate: refreshApps, isLoading } = useSWR(
     'applications',
     listApplications,
     { refreshInterval: 15000 },
   )
+  // Shares the 'node' SWR cache key with AppModal/Dashboard/Settings.
+  const { data: node } = useSWR('node', getNodeInfo, { refreshInterval: 30000 })
+  const toast = useToast()
 
   const [appModalOpen, setAppModalOpen] = useState(false)
   const [editApp, setEditApp] = useState<Application | null>(null)
@@ -97,66 +152,83 @@ function ApplicationsContent() {
     setExpandedAppId((prev) => (prev === appId ? null : appId))
   }
 
-  return (
-    <div className="space-y-6 max-w-7xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Applications</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage publishing applications, output protocols, and per-stream configs
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => { setEditApp(null); setAppModalOpen(true) }}
-          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition flex-shrink-0"
-        >
-          <Plus size={16} />
-          New Application
-        </button>
-      </div>
+  const openCreate = () => {
+    setEditApp(null)
+    setAppModalOpen(true)
+  }
 
-      {!apps || apps.length === 0 ? (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-12 text-center">
-          <AppWindow className="mx-auto text-gray-600 mb-3" size={32} />
-          <div className="text-sm text-gray-400">No applications yet</div>
-          <div className="text-xs text-gray-500 mt-1">
-            Create an application to start accepting RTMP publish streams
-          </div>
-        </div>
+  return (
+    <>
+      <PageHeader
+        title="Applications"
+        description="Manage publishing applications, output protocols, and per-stream configs."
+        actions={
+          <Button variant="primary" size="md" icon={<Plus size={16} />} onClick={openCreate}>
+            New Application
+          </Button>
+        }
+      />
+
+      {isLoading ? (
+        <TableSkeleton rows={3} cols={6} />
+      ) : !apps || apps.length === 0 ? (
+        <TableCard>
+          <EmptyState
+            icon={<AppWindow size={20} />}
+            title="No applications yet"
+            description="Create an application to start accepting RTMP, SRT and WHIP publish streams."
+            action={
+              <Button variant="primary" size="md" icon={<Plus size={16} />} onClick={openCreate}>
+                New Application
+              </Button>
+            }
+          />
+        </TableCard>
       ) : (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-800/40 text-xs uppercase tracking-wider text-gray-500">
-                <tr>
-                  <th className="px-4 py-2 text-left font-medium w-8"></th>
-                  <th className="px-4 py-2 text-left font-medium">Name</th>
-                  <th className="px-4 py-2 text-left font-medium">Status</th>
-                  <th className="px-4 py-2 text-left font-medium">Publish Key</th>
-                  <th className="px-4 py-2 text-left font-medium">Allow Any Stream</th>
-                  <th className="px-4 py-2 text-left font-medium">Output Protocols</th>
-                  <th className="px-4 py-2 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800">
-                {apps.map((app) => (
-                  <AppRows
-                    key={app.id}
-                    app={app}
-                    expanded={expandedAppId === app.id}
-                    onToggleExpand={() => toggleExpand(app.id)}
-                    onEdit={() => { setEditApp(app); setAppModalOpen(true) }}
-                    onDelete={() => setDeleteAppTarget(app)}
-                    onAddStream={() => { setStreamModalApp(app); setEditStream(null) }}
-                    onEditStream={(s) => { setStreamModalApp(app); setEditStream(s) }}
-                    onDeleteStream={(s) => setDeleteStreamTarget({ app, stream: s })}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <TableCard>
+          <Table>
+            <THead>
+              <tr>
+                <TH className="w-10">
+                  <span className="sr-only">Expand</span>
+                </TH>
+                <TH>Name</TH>
+                <TH>Status</TH>
+                <TH>Publish key</TH>
+                <TH>Allow any stream</TH>
+                <TH>Outputs</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
+              </tr>
+            </THead>
+            <TBody>
+              {apps.map((app) => (
+                <AppRows
+                  key={app.id}
+                  app={app}
+                  node={node}
+                  expanded={expandedAppId === app.id}
+                  onToggleExpand={() => toggleExpand(app.id)}
+                  onEdit={() => {
+                    setEditApp(app)
+                    setAppModalOpen(true)
+                  }}
+                  onDelete={() => setDeleteAppTarget(app)}
+                  onAddStream={() => {
+                    setStreamModalApp(app)
+                    setEditStream(null)
+                  }}
+                  onEditStream={(s) => {
+                    setStreamModalApp(app)
+                    setEditStream(s)
+                  }}
+                  onDeleteStream={(s) => setDeleteStreamTarget({ app, stream: s })}
+                />
+              ))}
+            </TBody>
+          </Table>
+        </TableCard>
       )}
 
       {/* Application create/edit modal */}
@@ -164,7 +236,11 @@ function ApplicationsContent() {
         open={appModalOpen}
         edit={editApp}
         onClose={() => setAppModalOpen(false)}
-        onSaved={() => { setAppModalOpen(false); refreshApps() }}
+        onSaved={(name) => {
+          toast.success(editApp ? `Saved application ${name}` : `Created application ${name}`)
+          setAppModalOpen(false)
+          refreshApps()
+        }}
       />
 
       {/* Delete application confirm */}
@@ -176,6 +252,7 @@ function ApplicationsContent() {
         onConfirm={async () => {
           if (!deleteAppTarget) return
           await deleteApplication(deleteAppTarget.id)
+          toast.success(`Deleted application ${deleteAppTarget.name}`)
           if (expandedAppId === deleteAppTarget.id) setExpandedAppId(null)
           setDeleteAppTarget(null)
           refreshApps()
@@ -188,8 +265,16 @@ function ApplicationsContent() {
           open={!!streamModalApp}
           app={streamModalApp}
           edit={editStream}
-          onClose={() => { setStreamModalApp(null); setEditStream(null) }}
-          onSaved={() => { setStreamModalApp(null); setEditStream(null); refreshApps() }}
+          onClose={() => {
+            setStreamModalApp(null)
+            setEditStream(null)
+          }}
+          onSaved={() => {
+            toast.success(editStream ? 'Stream config saved' : 'Stream config created')
+            setStreamModalApp(null)
+            setEditStream(null)
+            refreshApps()
+          }}
         />
       )}
 
@@ -205,18 +290,20 @@ function ApplicationsContent() {
             deleteStreamTarget.app.id,
             deleteStreamTarget.stream.id,
           )
+          toast.success(`Deleted stream config ${deleteStreamTarget.stream.name_pattern}`)
           setDeleteStreamTarget(null)
           refreshApps()
         }}
       />
-    </div>
+    </>
   )
 }
 
-// ---------- App row + inline stream sub-table ----------
+// ---------- App row + expandable details ----------
 
 function AppRows({
   app,
+  node,
   expanded,
   onToggleExpand,
   onEdit,
@@ -226,6 +313,7 @@ function AppRows({
   onDeleteStream,
 }: {
   app: Application
+  node: Awaited<ReturnType<typeof getNodeInfo>> | undefined
   expanded: boolean
   onToggleExpand: () => void
   onEdit: () => void
@@ -234,7 +322,8 @@ function AppRows({
   onEditStream: (s: StreamConfig) => void
   onDeleteStream: (s: StreamConfig) => void
 }) {
-  const chips = protocolChips(app)
+  const toast = useToast()
+  const [showKey, setShowKey] = useState(false)
 
   const { data: streams } = useSWR(
     expanded ? ['stream-configs', app.id] : null,
@@ -242,126 +331,275 @@ function AppRows({
     { refreshInterval: 10000 },
   )
 
+  const urls = publishURLs(app.name, node)
+
+  const copyFromMenu = async (text: string, what: string) => {
+    if (await copyToClipboard(text)) toast.success(`${what} copied`)
+    else toast.error('Copy failed')
+  }
+
   return (
     <>
-      <tr className="hover:bg-gray-800/30 transition">
-        {/* expand toggle */}
-        <td className="px-4 py-2.5">
+      <TR selected={expanded}>
+        <TD className="w-10 pr-0">
+          <IconButton
+            size="xs"
+            label={expanded ? `Collapse ${app.name} details` : `Expand ${app.name} details`}
+            aria-expanded={expanded}
+            onClick={onToggleExpand}
+          >
+            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          </IconButton>
+        </TD>
+        <TD>
           <button
             type="button"
             onClick={onToggleExpand}
-            className="text-gray-400 hover:text-white transition"
-            title={expanded ? 'Collapse streams' : 'Expand streams'}
+            className="rounded font-medium text-fg hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-fg"
           >
-            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            {app.name}
           </button>
-        </td>
-        <td className="px-4 py-2.5 text-white font-medium">{app.name}</td>
-        <td className="px-4 py-2.5">
-          <Badge variant={app.enabled ? 'green' : 'gray'}>
-            {app.enabled ? 'Enabled' : 'Disabled'}
-          </Badge>
-        </td>
-        <td className="px-4 py-2.5 font-mono text-xs text-gray-300">
-          {maskKey(app.publish_key)}
-        </td>
-        <td className="px-4 py-2.5">
+        </TD>
+        <TD>
+          <StatusBadge
+            status={app.enabled ? 'success' : 'disabled'}
+            label={app.enabled ? 'Enabled' : 'Disabled'}
+          />
+        </TD>
+        <TD>
+          {app.publish_key ? (
+            <div className="flex items-center gap-1">
+              <code className="font-mono text-xs text-fg-secondary">
+                {showKey ? app.publish_key : maskKey(app.publish_key)}
+              </code>
+              <IconButton
+                size="xs"
+                label={showKey ? 'Hide publish key' : 'Show publish key'}
+                onClick={() => setShowKey((v) => !v)}
+              >
+                {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+              </IconButton>
+              <CopyButton text={app.publish_key} title="Copy publish key" toastMessage="Publish key copied" />
+            </div>
+          ) : (
+            <span className="text-xs text-fg-muted">No key</span>
+          )}
+        </TD>
+        <TD>
           <Badge variant={app.allow_any_stream ? 'blue' : 'yellow'}>
             {app.allow_any_stream ? 'Yes' : 'No'}
           </Badge>
-        </td>
-        <td className="px-4 py-2.5">
-          {chips.length === 0 ? (
-            <span className="text-gray-600 text-xs">none</span>
-          ) : (
-            <div className="flex flex-wrap gap-1">
-              {chips.map((c) => (
-                <Badge key={c.label} variant={c.color as any}>
-                  {c.label}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </td>
-        <td className="px-4 py-2.5 text-right">
-          <div className="inline-flex gap-1.5">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-            >
-              <Pencil size={12} />
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={onDelete}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-            >
-              <Trash2 size={12} />
-              Delete
-            </button>
-          </div>
-        </td>
-      </tr>
+        </TD>
+        <TD>
+          <OutputBadges app={app} />
+        </TD>
+        <TD align="right">
+          <RowActions>
+            <CopyButton
+              text={urls.rtmp}
+              label="RTMP"
+              variant="secondary"
+              title="Copy RTMP server URL (add the stream name in the encoder)"
+              toastMessage="RTMP server URL copied"
+            />
+            <IconButton size="xs" label={`Edit ${app.name}`} onClick={onEdit}>
+              <Pencil size={14} />
+            </IconButton>
+            <DropdownMenu
+              label={`More actions for ${app.name}`}
+              items={[
+                {
+                  label: expanded ? 'Hide stream configs' : 'Show stream configs',
+                  icon: expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />,
+                  onClick: onToggleExpand,
+                },
+                { label: 'Add stream config', icon: <ListPlus size={14} />, onClick: onAddStream },
+                ...(urls.srt
+                  ? [{ label: 'Copy SRT publish URL', icon: <Copy size={14} />, onClick: () => copyFromMenu(urls.srt!, 'SRT URL') }]
+                  : []),
+                { label: 'Delete application', icon: <Trash2 size={14} />, danger: true, separator: true, onClick: onDelete },
+              ]}
+            />
+          </RowActions>
+        </TD>
+      </TR>
 
-      {/* Inline stream configs sub-table */}
       {expanded && (
         <tr>
-          <td colSpan={7} className="px-0 py-0 bg-gray-950/60">
-            <div className="border-t border-gray-800 border-b border-gray-800">
-              <div className="flex items-center justify-between px-8 py-2.5 bg-gray-800/20">
-                <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Stream Configs — {app.name}
-                </span>
-                <button
-                  type="button"
-                  onClick={onAddStream}
-                  className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-                >
-                  <Plus size={12} />
-                  Add Stream Config
-                </button>
-              </div>
-
-              {!streams || streams.length === 0 ? (
-                <div className="px-8 py-6 text-sm text-gray-500 text-center">
-                  No stream configs.{' '}
-                  {app.allow_any_stream
-                    ? 'Any stream can publish (allow_any_stream is on).'
-                    : 'Add a config to allow specific streams to publish.'}
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="bg-gray-800/20 text-gray-600 uppercase tracking-wider">
-                      <tr>
-                        <th className="pl-8 pr-4 py-2 text-left font-medium">Pattern</th>
-                        <th className="px-4 py-2 text-left font-medium">Wildcard</th>
-                        <th className="px-4 py-2 text-left font-medium">Protocols</th>
-                        <th className="px-4 py-2 text-left font-medium">DVR</th>
-                        <th className="px-4 py-2 text-left font-medium">Status</th>
-                        <th className="px-4 py-2 text-right font-medium pr-6">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-800/60">
-                      {streams.map((s) => (
-                        <StreamConfigRow
-                          key={s.id}
-                          stream={s}
-                          onEdit={() => onEditStream(s)}
-                          onDelete={() => onDeleteStream(s)}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+          <td colSpan={7} className="bg-canvas/50 p-0">
+            <div className="space-y-4 border-b border-border px-4 py-4 sm:px-6">
+              <AppDetails app={app} urls={urls} />
+              <StreamConfigsPanel
+                app={app}
+                streams={streams}
+                onAddStream={onAddStream}
+                onEditStream={onEditStream}
+                onDeleteStream={onDeleteStream}
+              />
             </div>
           </td>
         </tr>
       )}
     </>
+  )
+}
+
+// Read-only summary of the app's settings, grouped as in the edit form.
+function AppDetails({ app, urls }: { app: Application; urls: { rtmp: string; srt: string | null } }) {
+  const scteLabel: Record<string, string> = {
+    disabled: 'Disabled',
+    passthrough: 'Passthrough',
+    insert: 'Insert',
+    hybrid: 'Hybrid',
+  }
+  const markerLabel: Record<string, string> = {
+    none: 'None',
+    cue: 'CUE-OUT/-IN/-CONT',
+    splicepoint: 'SPLICEPOINT-SCTE35',
+    daterange: 'DATERANGE',
+  }
+  const scte = app.scte35_mode || 'disabled'
+  const marker = app.ad_marker_format || 'none'
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <DetailSection title="Ingest & auth">
+        <DetailItem label="RTMP server URL">
+          <CopyField value={urls.rtmp} />
+          <div className="mt-1 text-xs text-fg-muted">
+            Put the stream name in the encoder&apos;s stream name / key field.
+          </div>
+        </DetailItem>
+        {urls.srt && (
+          <DetailItem label="SRT publish URL">
+            <CopyField value={urls.srt} />
+          </DetailItem>
+        )}
+        <DetailItem label="Push login">
+          {app.push_login ? (
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <code className="font-mono text-xs text-fg-secondary">{app.push_login}</code>
+              <span className="text-xs text-fg-muted">
+                password {app.has_push_password ? 'set' : 'not set'}
+              </span>
+            </span>
+          ) : (
+            <span className="text-fg-muted">None</span>
+          )}
+        </DetailItem>
+        <DetailItem label="Allow any stream">
+          {app.allow_any_stream ? 'Yes' : 'No: only streams with a stream config can publish'}
+        </DetailItem>
+      </DetailSection>
+
+      <DetailSection title="Delivery">
+        <DetailItem label="Outputs">
+          <OutputBadges app={app} />
+        </DetailItem>
+        <DetailItem label="HLS overrides">
+          <span className="tabular">
+            Segment {app.hls_seg_duration_s ? `${app.hls_seg_duration_s}s` : 'global'} · window{' '}
+            {app.hls_playlist_window ? `${app.hls_playlist_window} segments` : 'global'}
+          </span>
+        </DetailItem>
+        <DetailItem label="SCTE-35">
+          {scteLabel[scte] ?? scte}
+          {scte !== 'disabled' && (
+            <span className="text-fg-muted"> · markers: {markerLabel[marker] ?? marker}</span>
+          )}
+        </DetailItem>
+        <DetailItem label="nDVR">
+          {app.dvr_enabled ? (
+            <span className="tabular">
+              Recording · window {app.dvr_window_s ? `${app.dvr_window_s}s` : 'global'}
+            </span>
+          ) : (
+            <span className="text-fg-muted">Off</span>
+          )}
+        </DetailItem>
+      </DetailSection>
+    </div>
+  )
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-lg border border-border bg-surface">
+      <h3 className="border-b border-border px-4 py-2.5 text-[13px] font-semibold text-fg">{title}</h3>
+      <dl className="divide-y divide-border">{children}</dl>
+    </section>
+  )
+}
+
+function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-1 gap-1 px-4 py-2.5 sm:grid-cols-[140px_1fr] sm:gap-4">
+      <dt className="pt-0.5 text-[13px] text-fg-muted">{label}</dt>
+      <dd className="min-w-0 text-[13px] text-fg-secondary">{children}</dd>
+    </div>
+  )
+}
+
+function StreamConfigsPanel({
+  app,
+  streams,
+  onAddStream,
+  onEditStream,
+  onDeleteStream,
+}: {
+  app: Application
+  streams: StreamConfig[] | undefined
+  onAddStream: () => void
+  onEditStream: (s: StreamConfig) => void
+  onDeleteStream: (s: StreamConfig) => void
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+        <h3 className="text-[13px] font-semibold text-fg">
+          Stream configs <span className="font-normal text-fg-muted">· {app.name}</span>
+        </h3>
+        <Button variant="secondary" size="xs" icon={<Plus size={13} />} onClick={onAddStream}>
+          Add stream config
+        </Button>
+      </div>
+
+      {!streams || streams.length === 0 ? (
+        <div className="px-4 py-6 text-center text-[13px] text-fg-muted">
+          No stream configs.{' '}
+          {app.allow_any_stream
+            ? 'Any stream can publish (allow_any_stream is on).'
+            : 'Add a config to allow specific streams to publish.'}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table>
+            <THead>
+              <tr>
+                <TH>Pattern</TH>
+                <TH>Match</TH>
+                <TH>Outputs</TH>
+                <TH>DVR</TH>
+                <TH>Status</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
+              </tr>
+            </THead>
+            <TBody>
+              {streams.map((s) => (
+                <StreamConfigRow
+                  key={s.id}
+                  stream={s}
+                  onEdit={() => onEditStream(s)}
+                  onDelete={() => onDeleteStream(s)}
+                />
+              ))}
+            </TBody>
+          </Table>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -376,23 +614,15 @@ function StreamConfigRow({
   onEdit: () => void
   onDelete: () => void
 }) {
-  const protoStr = (['HLS', 'DASH', 'MPEG-TS', 'LL-HLS'] as const)
-    .map((label, i) => {
-      const v = [stream.out_hls, stream.out_dash, stream.out_mpegts, stream.out_ll_hls][i]
-      if (v === -1) return `${label}:inherit`
-      if (v === 1) return `${label}:on`
-      return `${label}:off`
-    })
-    .filter((x) => !x.endsWith(':inherit') || stream.out_hls === -1) // show all
-
   const dvrLabel =
     stream.dvr_enabled === -1
-      ? 'DVR: inherit'
+      ? 'inherit'
       : stream.dvr_enabled === 1
-        ? `DVR: on${stream.dvr_window_s ? ` (${stream.dvr_window_s}s)` : ''}`
-        : 'DVR: off'
+        ? `on${stream.dvr_window_s ? ` (${stream.dvr_window_s}s)` : ''}`
+        : 'off'
 
-  // Protocol summary chips
+  // Tri-state outputs (-1 inherit, 0 off, 1 on): overrides get a badge,
+  // inherited ones are summarised as text.
   const protoChips: { label: string; v: number }[] = [
     { label: 'HLS', v: stream.out_hls },
     { label: 'DASH', v: stream.out_dash },
@@ -401,61 +631,55 @@ function StreamConfigRow({
     { label: 'DVB-DASH', v: stream.dvb_dash_enabled },
     { label: 'EBU-TT-D', v: stream.dvb_subtitles_enabled },
   ]
+  const inherited = protoChips.filter((c) => c.v === -1)
 
   return (
-    <tr className="hover:bg-gray-800/20 transition">
-      <td className="pl-8 pr-4 py-2 font-mono text-gray-200">{stream.name_pattern}</td>
-      <td className="px-4 py-2">
-        {stream.is_wildcard ? (
-          <Badge variant="purple">wildcard</Badge>
-        ) : (
-          <Badge variant="gray">exact</Badge>
-        )}
-      </td>
-      <td className="px-4 py-2">
-        <div className="flex flex-wrap gap-1">
-          {protoChips.map(({ label, v }) => (
-            <span
-              key={label}
-              className={
-                'inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ' +
-                (v === 1
-                  ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
-                  : v === 0
-                    ? 'bg-gray-700/30 text-gray-500 border-gray-700/30 line-through'
-                    : 'bg-gray-700/20 text-gray-600 border-gray-700/20 italic')
-              }
-            >
-              {label}
+    <TR>
+      <TD mono className="text-fg">
+        {stream.name_pattern}
+      </TD>
+      <TD>
+        {stream.is_wildcard ? <Badge variant="purple">wildcard</Badge> : <Badge variant="gray">exact</Badge>}
+      </TD>
+      <TD>
+        <div className="flex flex-wrap items-center gap-1">
+          {protoChips
+            .filter((c) => c.v !== -1)
+            .map(({ label, v }) => (
+              <Badge
+                key={label}
+                mono
+                variant={v === 1 ? 'blue' : 'gray'}
+                className={v === 1 ? undefined : 'line-through'}
+                title={`${label}: ${v === 1 ? 'on' : 'off'}`}
+              >
+                {label}
+                <span className="sr-only">{v === 1 ? ' on' : ' off'}</span>
+              </Badge>
+            ))}
+          {inherited.length > 0 && (
+            <span className="text-xs text-fg-muted" title={`Inherited from app: ${inherited.map((c) => c.label).join(', ')}`}>
+              {inherited.length === protoChips.length ? 'all inherit' : `${inherited.length} inherit`}
             </span>
-          ))}
+          )}
         </div>
-      </td>
-      <td className="px-4 py-2 text-gray-400">{dvrLabel}</td>
-      <td className="px-4 py-2">
-        <Badge variant={stream.enabled ? 'green' : 'gray'}>
-          {stream.enabled ? 'on' : 'off'}
-        </Badge>
-      </td>
-      <td className="px-4 py-2 text-right pr-6">
-        <div className="inline-flex gap-1.5">
-          <button
-            type="button"
-            onClick={onEdit}
-            className="px-1.5 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-          >
-            <Pencil size={11} />
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="px-1.5 py-1 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-          >
-            <Trash2 size={11} />
-          </button>
-        </div>
-      </td>
-    </tr>
+      </TD>
+      <TD>{dvrLabel}</TD>
+      <TD>
+        <StatusBadge status={stream.enabled ? 'success' : 'disabled'} label={stream.enabled ? 'On' : 'Off'} />
+      </TD>
+      <TD align="right">
+        <RowActions>
+          <IconButton size="xs" label={`Edit ${stream.name_pattern}`} onClick={onEdit}>
+            <Pencil size={14} />
+          </IconButton>
+          <DropdownMenu
+            label={`More actions for ${stream.name_pattern}`}
+            items={[{ label: 'Delete stream config', icon: <Trash2 size={14} />, danger: true, onClick: onDelete }]}
+          />
+        </RowActions>
+      </TD>
+    </TR>
   )
 }
 
@@ -482,6 +706,45 @@ const defaultAppForm = {
   dvr_window_s: 0,
 }
 
+// Text input for a secret, masked by default with a show/hide button.
+function SecretInput({
+  value,
+  onChange,
+  placeholder,
+  required,
+  label,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  required?: boolean
+  label: string
+}) {
+  const [show, setShow] = useState(false)
+  return (
+    <div className="relative">
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={inputClass + ' pr-10 font-mono'}
+        placeholder={placeholder}
+        autoComplete="new-password"
+        spellCheck={false}
+        required={required}
+      />
+      <IconButton
+        size="xs"
+        label={show ? `Hide ${label}` : `Show ${label}`}
+        onClick={() => setShow((v) => !v)}
+        className="absolute right-1 top-1/2 -translate-y-1/2"
+      >
+        {show ? <EyeOff size={14} /> : <Eye size={14} />}
+      </IconButton>
+    </div>
+  )
+}
+
 function AppModal({
   open,
   edit,
@@ -491,7 +754,7 @@ function AppModal({
   open: boolean
   edit: Application | null
   onClose: () => void
-  onSaved: () => void
+  onSaved: (name: string) => void
 }) {
   const [form, setForm] = useState(defaultAppForm)
   const [busy, setBusy] = useState(false)
@@ -541,7 +804,7 @@ function AppModal({
       } else {
         await createApplication(data)
       }
-      onSaved()
+      onSaved(form.name)
     } catch (e: any) {
       setErr(e?.message ?? 'Save failed')
     } finally {
@@ -549,17 +812,28 @@ function AppModal({
     }
   }
 
+  const outputs = [
+    { key: 'out_hls', label: 'HLS', description: 'Segmented HTTP Live Streaming' },
+    { key: 'out_dash', label: 'DASH', description: 'MPEG-DASH manifest and segments' },
+    { key: 'out_mpegts', label: 'MPEG-TS', description: 'Continuous TS over HTTP (mpeg.2ts)' },
+    { key: 'out_ll_hls', label: 'LL-HLS', description: 'Low-latency HLS partial segments' },
+    { key: 'dvb_dash_enabled', label: 'DVB-DASH Profile', description: 'DVB profile signalling in the MPD' },
+    { key: 'dvb_subtitles_enabled', label: 'EBU-TT-D Subtitles', description: 'CEA-608/708 captions as DASH subtitles' },
+  ] as const
+
+  const appPath = form.name || '<app>'
+
   return (
     <Modal
       open={open}
       onClose={() => !busy && onClose()}
       title={edit ? 'Edit Application' : 'New Application'}
+      description={edit ? edit.name : 'An application groups streams under one publish path, key and output settings.'}
       size="lg"
     >
-      <form onSubmit={onSubmit} className="space-y-4">
-        {/* Basic info */}
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="App Name">
+      <form onSubmit={onSubmit} className="space-y-5">
+        <FormSection title="General">
+          <FormField label="App Name" required hint="Used in publish and playback URLs">
             <input
               required
               value={form.name}
@@ -568,123 +842,114 @@ function AppModal({
               placeholder="live"
             />
           </FormField>
-          <FormField label="Publish Key" hint="Leave blank for no key">
-            <input
-              value={form.publish_key}
-              onChange={(e) => setForm({ ...form, publish_key: e.target.value })}
-              className={inputClass}
-              placeholder="leave blank for no key"
-            />
-          </FormField>
-          <FormField label="Push Login" hint="RTMP username; leave blank for no login">
-            <input
-              value={form.push_login}
-              onChange={(e) => setForm({ ...form, push_login: e.target.value })}
-              className={inputClass}
-              placeholder="no login"
-              autoComplete="off"
-            />
-          </FormField>
-          <FormField
-            label="Push Password"
-            hint={
-              edit?.has_push_password
-                ? 'Set. Leave blank to keep the current password'
-                : 'Encoder password (FMLE prompts for it)'
-            }
-          >
-            <input
-              type="password"
-              value={form.push_password}
-              onChange={(e) => setForm({ ...form, push_password: e.target.value })}
-              className={inputClass}
-              placeholder={edit?.has_push_password ? '••••••••' : ''}
-              autoComplete="new-password"
+          <Toggle
+            checked={form.enabled}
+            onChange={(v) => setForm({ ...form, enabled: v })}
+            label="Enabled"
+            description="Disabled applications reject new publishers"
+          />
+        </FormSection>
+
+        <FormSection title="Ingest & auth" description="Who may publish, and how encoders authenticate.">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormField label="Publish Key" hint="Leave blank for no key">
+              <SecretInput
+                label="publish key"
+                value={form.publish_key}
+                onChange={(v) => setForm({ ...form, publish_key: v })}
+                placeholder="leave blank for no key"
+              />
+            </FormField>
+            <div className="hidden sm:block" />
+            <FormField label="Push Login" hint="RTMP username; leave blank for no login">
+              <input
+                value={form.push_login}
+                onChange={(e) => setForm({ ...form, push_login: e.target.value })}
+                className={inputClass}
+                placeholder="no login"
+                autoComplete="off"
+              />
+            </FormField>
+            <FormField
+              label="Push Password"
               required={!!form.push_login && !edit?.has_push_password}
-            />
-          </FormField>
-        </div>
+              hint={
+                edit?.has_push_password
+                  ? 'Set. Leave blank to keep the current password'
+                  : 'Encoder password (FMLE prompts for it)'
+              }
+            >
+              <SecretInput
+                label="push password"
+                value={form.push_password}
+                onChange={(v) => setForm({ ...form, push_password: v })}
+                placeholder={edit?.has_push_password ? '••••••••' : ''}
+                required={!!form.push_login && !edit?.has_push_password}
+              />
+            </FormField>
+          </div>
 
-        {/* Publish URLs — informational, derived from the app name above */}
-        <div className="rounded border border-gray-700 bg-gray-800/40 px-3 py-2 space-y-1">
-          <div className="text-xs uppercase tracking-wider text-gray-500">
-            Publish via
-          </div>
-          <div className="text-xs font-mono text-gray-300 break-all">
-            RTMP: rtmp://&lt;host&gt;{listenPort(node?.rtmp_listen, ':1935')}/
-            {form.name || '<app>'}/&lt;stream&gt;
-          </div>
-          {node?.srt?.enabled && (
-            <div className="text-xs font-mono text-gray-300 break-all">
-              SRT: srt://&lt;host&gt;{listenPort(node?.srt?.listen, ':4000')}?streamid=
-              {form.name || '<app>'}/&lt;stream&gt;
+          <Toggle
+            checked={form.allow_any_stream}
+            onChange={(v) => setForm({ ...form, allow_any_stream: v })}
+            label="Allow Any Stream"
+            description="If off, only streams defined in stream configs can publish"
+          />
+
+          {/* Publish URLs — informational, derived from the app name above */}
+          <div className="space-y-1 rounded-md border border-border bg-elevated/40 px-3 py-2">
+            <div className="text-xs font-medium text-fg-muted">Publish via</div>
+            <div className="break-all font-mono text-xs text-fg-secondary">
+              RTMP: rtmp://&lt;host&gt;{listenPort(node?.rtmp_listen, ':1935')}/{appPath}/&lt;stream&gt;
             </div>
-          )}
-        </div>
-
-        {/* Checkboxes */}
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
-              checked={form.enabled}
-              onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-            />
-            Enabled
-          </label>
-          <label className="flex items-start gap-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={form.allow_any_stream}
-              onChange={(e) => setForm({ ...form, allow_any_stream: e.target.checked })}
-            />
-            <span>
-              Allow Any Stream{' '}
-              <span className="text-gray-500 text-xs">
-                — if unchecked, only streams defined in stream configs can publish
-              </span>
-            </span>
-          </label>
-        </div>
-
-        {/* Output protocols */}
-        <div>
-          <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-            Output Protocols
+            {node?.srt?.enabled && (
+              <div className="break-all font-mono text-xs text-fg-secondary">
+                SRT: srt://&lt;host&gt;{listenPort(node?.srt?.listen, ':4000')}?streamid={appPath}/&lt;stream&gt;
+              </div>
+            )}
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {(
-              [
-                { key: 'out_hls', label: 'HLS' },
-                { key: 'out_dash', label: 'DASH' },
-                { key: 'out_mpegts', label: 'MPEG-TS' },
-                { key: 'out_ll_hls', label: 'LL-HLS' },
-                { key: 'dvb_dash_enabled', label: 'DVB-DASH Profile' },
-                { key: 'dvb_subtitles_enabled', label: 'EBU-TT-D Subtitles' },
-              ] as const
-            ).map(({ key, label }) => (
-              <label
-                key={key}
-                className="flex items-center gap-2 text-sm text-gray-300 px-3 py-2 rounded border border-gray-700 bg-gray-800/40 cursor-pointer hover:border-gray-600 transition"
-              >
-                <input
-                  type="checkbox"
+        </FormSection>
+
+        <FormSection title="Output protocols" description="Formats viewers can play this application's streams in.">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {outputs.map(({ key, label, description }) => (
+              <div key={key} className="rounded-md border border-border bg-elevated/30 px-3 py-2.5">
+                <Toggle
                   checked={form[key]}
-                  onChange={(e) => setForm({ ...form, [key]: e.target.checked })}
+                  onChange={(v) => setForm({ ...form, [key]: v })}
+                  label={label}
+                  description={description}
                 />
-                {label}
-              </label>
+              </div>
             ))}
           </div>
-        </div>
+        </FormSection>
 
-        {/* SCTE-35 */}
-        <div>
-          <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-            SCTE-35
+        <FormSection title="HLS overrides" description="0 = use global defaults.">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormField label="Segment Duration (s)">
+              <input
+                type="number"
+                min={0}
+                value={form.hls_seg_duration_s}
+                onChange={(e) => setForm({ ...form, hls_seg_duration_s: Number(e.target.value) })}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Playlist Window (segments)">
+              <input
+                type="number"
+                min={0}
+                value={form.hls_playlist_window}
+                onChange={(e) => setForm({ ...form, hls_playlist_window: Number(e.target.value) })}
+                className={inputClass}
+              />
+            </FormField>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+        </FormSection>
+
+        <FormSection title="SCTE-35" description="Ad-break markers.">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FormField
               label="Mode"
               hint="Passthrough forwards markers already in the source; Insert allows server-triggered breaks with no source markers; Hybrid does both"
@@ -700,12 +965,13 @@ function AppModal({
                 <option value="hybrid">Hybrid</option>
               </select>
             </FormField>
-            <FormField label="Ad marker format">
+            <FormField
+              label="Ad marker format"
+              hint={form.scte35_mode === 'disabled' ? 'Choose a mode first' : 'Tags written into HLS playlists'}
+            >
               <select
                 value={form.ad_marker_format}
-                onChange={(e) =>
-                  setForm({ ...form, ad_marker_format: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, ad_marker_format: e.target.value })}
                 className={inputClass}
                 disabled={form.scte35_mode === 'disabled'}
               >
@@ -716,28 +982,16 @@ function AppModal({
               </select>
             </FormField>
           </div>
-        </div>
+        </FormSection>
 
-        {/* nDVR */}
-        <div>
-          <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-            nDVR (rewind)
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="flex items-start gap-2 text-sm text-gray-300 px-3 py-2 rounded border border-gray-700 bg-gray-800/40 cursor-pointer hover:border-gray-600 transition">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={form.dvr_enabled}
-                onChange={(e) => setForm({ ...form, dvr_enabled: e.target.checked })}
-              />
-              <span>
-                Record &amp; allow rewind
-                <span className="block text-gray-500 text-xs">
-                  One fMP4 recording serves both HLS and DASH rewind
-                </span>
-              </span>
-            </label>
+        <FormSection title="nDVR (rewind)">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Toggle
+              checked={form.dvr_enabled}
+              onChange={(v) => setForm({ ...form, dvr_enabled: v })}
+              label="Record & allow rewind"
+              description="One fMP4 recording serves both HLS and DASH rewind"
+            />
             <FormField label="Rewind window (seconds)" hint="0 = global DVR window">
               <input
                 type="number"
@@ -750,53 +1004,15 @@ function AppModal({
             </FormField>
           </div>
           {form.dvr_enabled && (
-            <div className="mt-2 rounded border border-gray-700 bg-gray-800/40 px-3 py-2 space-y-1 text-xs font-mono text-gray-300 break-all">
-              <div>/{form.name || '<app>'}/&lt;stream&gt;/playlist_dvr.m3u8</div>
-              <div>/{form.name || '<app>'}/&lt;stream&gt;/manifest_dvr.mpd</div>
+            <div className="space-y-1 break-all rounded-md border border-border bg-elevated/40 px-3 py-2 font-mono text-xs text-fg-secondary">
+              <div>/{appPath}/&lt;stream&gt;/playlist_dvr.m3u8</div>
+              <div>/{appPath}/&lt;stream&gt;/manifest_dvr.mpd</div>
             </div>
           )}
-        </div>
-
-        {/* HLS overrides */}
-        <div>
-          <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-            HLS Override{' '}
-            <span className="normal-case text-gray-600 text-[10px]">
-              (0 = use global defaults)
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="Segment Duration (s)">
-              <input
-                type="number"
-                min={0}
-                value={form.hls_seg_duration_s}
-                onChange={(e) =>
-                  setForm({ ...form, hls_seg_duration_s: Number(e.target.value) })
-                }
-                className={inputClass}
-              />
-            </FormField>
-            <FormField label="Playlist Window (segments)">
-              <input
-                type="number"
-                min={0}
-                value={form.hls_playlist_window}
-                onChange={(e) =>
-                  setForm({ ...form, hls_playlist_window: Number(e.target.value) })
-                }
-                className={inputClass}
-              />
-            </FormField>
-          </div>
-        </div>
+        </FormSection>
 
         <ErrorBox msg={err} />
-        <ModalActions
-          busy={busy}
-          onCancel={onClose}
-          submitLabel={edit ? 'Save' : 'Create'}
-        />
+        <ModalActions busy={busy} onCancel={onClose} submitLabel={edit ? 'Save' : 'Create'} />
       </form>
     </Modal>
   )

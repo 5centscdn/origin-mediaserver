@@ -108,6 +108,24 @@ make urls          # prints example ingest/playback URLs
 - `metrics`: Prometheus.
 - `panel/`: Next.js 14 management UI with pages for dashboard, streams,
   applications, ABR, pull, DVR, failover, servers, users, settings and login.
+  Design system:
+  - Colors are CSS variables in `src/app/globals.css` (RGB channels,
+    contrast-checked against the card surface), exposed as semantic Tailwind
+    names in `tailwind.config.ts`: `bg-canvas`, `bg-surface`, `bg-elevated`,
+    `border-border`, `text-fg`/`-secondary`/`-muted`, `primary`, `success`,
+    `warning`, `danger`, `info`. The `gray`/`blue`/`yellow` scales are
+    remapped onto the same palette as a fallback. Use the semantic names in
+    new code.
+  - Shared components live in `src/components/ui/` (Button, IconButton,
+    Card, PageHeader, EmptyState, StatusBadge, Table/TH/TD/Truncate,
+    CopyButton/CopyField, DropdownMenu, Toggle, toasts via `useToast`,
+    skeletons), plus `FormHelpers`, `Modal` and `Badge`.
+  - `Layout` is the shell: a grouped sidebar (collapsible on desktop, a
+    drawer below `lg`), `ToastProvider`, and the live cache banner. It
+    already provides padding and `space-y-6`, so pages return a fragment.
+    Fixed-position children need `!mt-0`.
+  - Inter and JetBrains Mono come from `next/font`, bundled into the static
+    export (no runtime font requests).
 - `src/`: legacy empty directory tree, not used.
 
 ## Conventions

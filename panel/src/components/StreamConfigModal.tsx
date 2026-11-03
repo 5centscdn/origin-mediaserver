@@ -5,11 +5,15 @@ import useSWR from 'swr'
 import { Modal } from '@/components/Modal'
 import {
   FormField,
+  FormSection,
+  CheckboxField,
   inputClass,
+  textareaClass,
   ModalActions,
   ErrorBox,
   useStateReset,
 } from '@/components/FormHelpers'
+import { Toggle } from '@/components/ui'
 import {
   listApplications,
   createStreamConfig,
@@ -19,10 +23,6 @@ import {
 } from '@/lib/api'
 
 type TriState = -1 | 0 | 1
-
-const selectClass =
-  'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500'
-
 
 const defaultStreamForm = {
   name_pattern: '',
@@ -141,6 +141,7 @@ export function StreamConfigModal({
     }
   }
 
+
   const triOptions: { value: TriState; label: string }[] = [
     { value: -1, label: 'Inherit from app' },
     { value: 1, label: 'Enabled' },
@@ -164,101 +165,120 @@ export function StreamConfigModal({
             ? `Add Stream — ${parent.name}`
             : 'Add Stream'
       }
+      description={
+        edit
+          ? 'Per-stream overrides on top of the application settings.'
+          : 'Define a stream under an application. Exact names can be used in ABR groups before they go live.'
+      }
       size="lg"
     >
-      <form onSubmit={onSubmit} className="space-y-4">
-        {/* Parent application (Streams page) */}
-        {!app && (
-          <FormField label="Parent Application">
-            <select
+      <form onSubmit={onSubmit} className="space-y-5">
+        <FormSection title="Stream">
+          {/* Parent application (Streams page) */}
+          {!app && (
+            <FormField
+              label="Parent Application"
               required
-              value={appId}
-              onChange={(e) => setAppId(e.target.value)}
-              disabled={!!edit}
-              className={selectClass}
+              hint={edit ? "A stream can't be moved to another application." : undefined}
             >
-              <option value="" disabled>
-                — select an application —
-              </option>
-              {(apps ?? []).map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
+              <select
+                required
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                disabled={!!edit}
+                className={inputClass}
+              >
+                <option value="" disabled>
+                  — select an application —
                 </option>
-              ))}
-            </select>
-          </FormField>
-        )}
-
-        {/* Name(s) */}
-        <FormField label={edit ? 'Stream Name / Pattern' : 'Stream Name(s)'}>
-          {edit ? (
-            <input
-              required
-              value={form.name_pattern}
-              onChange={(e) => onPatternChange(e.target.value)}
-              className={inputClass}
-              placeholder="* or cam_* or cam_%i or mystream"
-            />
-          ) : (
-            <textarea
-              required
-              rows={3}
-              value={form.name_pattern}
-              onChange={(e) => onPatternChange(e.target.value)}
-              className={inputClass + ' font-mono'}
-              placeholder={'mystream\nor several, one per line: test1, test2, test3'}
-            />
+                {(apps ?? []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
           )}
+
+          {/* Name(s) */}
+          <FormField
+            label={edit ? 'Stream Name / Pattern' : 'Stream Name(s)'}
+            required
+            hint={!edit ? 'Enter several names (one per line or comma separated) to create one stream each.' : undefined}
+          >
+            {edit ? (
+              <input
+                required
+                value={form.name_pattern}
+                onChange={(e) => onPatternChange(e.target.value)}
+                className={inputClass + ' font-mono'}
+                placeholder="* or cam_* or cam_%i or mystream"
+              />
+            ) : (
+              <textarea
+                required
+                rows={3}
+                value={form.name_pattern}
+                onChange={(e) => onPatternChange(e.target.value)}
+                className={textareaClass}
+                placeholder={'mystream\nor several, one per line: test1, test2, test3'}
+              />
+            )}
+          </FormField>
+
           {!edit && names.length > 1 && (
-            <div className="mt-1 text-xs text-blue-400">
-              Creates {names.length} streams: {names.join(', ')}
+            <div className="rounded-md border border-info/30 bg-info/10 px-3 py-2 text-xs text-info">
+              Creates {names.length} streams: <span className="font-mono">{names.join(', ')}</span>
               {parent && (
-                <span className="text-gray-500">
+                <span className="text-fg-muted">
                   {' '}
-                  (publish to rtmp://&lt;host&gt;/{parent.name}/{names[0]})
+                  (publish to <span className="font-mono">rtmp://&lt;host&gt;/{parent.name}/{names[0]}</span>)
                 </span>
               )}
             </div>
           )}
-          <div className="mt-1.5 text-xs text-gray-500 space-y-0.5 bg-gray-800/50 rounded px-3 py-2 border border-gray-700/50">
-            <div>
-              <code className="text-gray-400">*</code> — any stream name
-            </div>
-            <div>
-              <code className="text-gray-400">cam_*</code> — any stream starting with{' '}
-              <code className="text-gray-400">cam_</code>
-            </div>
-            <div>
-              <code className="text-gray-400">cam_%i</code> — FMLE multi-bitrate (cam_1,
-              cam_2, …)
-            </div>
-            <div>
-              <code className="text-gray-400">mystream</code> — only that exact stream
-            </div>
-          </div>
-        </FormField>
 
-        {/* Wildcard (single name only) */}
-        {names.length <= 1 && (
-        <label className="flex items-center gap-2 text-sm text-gray-300">
-          <input
-            type="checkbox"
-            checked={form.is_wildcard}
-            onChange={(e) => setForm({ ...form, is_wildcard: e.target.checked })}
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border border-border bg-elevated/40 px-3 py-2 text-xs text-fg-muted">
+            <dt>
+              <code className="font-mono text-fg-secondary">*</code>
+            </dt>
+            <dd>any stream name</dd>
+            <dt>
+              <code className="font-mono text-fg-secondary">cam_*</code>
+            </dt>
+            <dd>
+              any stream starting with <code className="font-mono text-fg-secondary">cam_</code>
+            </dd>
+            <dt>
+              <code className="font-mono text-fg-secondary">cam_%i</code>
+            </dt>
+            <dd>FMLE multi-bitrate (cam_1, cam_2, …)</dd>
+            <dt>
+              <code className="font-mono text-fg-secondary">mystream</code>
+            </dt>
+            <dd>only that exact stream</dd>
+          </dl>
+
+          {/* Wildcard (single name only) */}
+          {names.length <= 1 && (
+            <CheckboxField
+              checked={form.is_wildcard}
+              onChange={(v) => setForm({ ...form, is_wildcard: v })}
+              label="Is Wildcard"
+              description="Auto-detected from a pattern containing * or %i."
+            />
+          )}
+
+          <Toggle
+            checked={form.enabled}
+            onChange={(v) => setForm({ ...form, enabled: v })}
+            label="Enabled"
           />
-          Is Wildcard{' '}
-          <span className="text-gray-500 text-xs">
-            (auto-detected from pattern containing * or %i)
-          </span>
-        </label>
-        )}
+        </FormSection>
 
         {/* Protocol overrides */}
-        <div>
-          <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-            Output Protocol Overrides
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+        <FormSection title="Output Protocol Overrides" description="Inherit uses the parent application's setting.">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {(
               [
                 { key: 'out_hls', label: 'HLS' },
@@ -272,10 +292,8 @@ export function StreamConfigModal({
               <FormField key={key} label={label}>
                 <select
                   value={form[key]}
-                  onChange={(e) =>
-                    setForm({ ...form, [key]: Number(e.target.value) as TriState })
-                  }
-                  className={selectClass}
+                  onChange={(e) => setForm({ ...form, [key]: Number(e.target.value) as TriState })}
+                  className={inputClass}
                 >
                   {triOptions.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -286,19 +304,16 @@ export function StreamConfigModal({
               </FormField>
             ))}
           </div>
-        </div>
+        </FormSection>
 
         {/* DVR */}
-        <div>
-          <div className="text-xs uppercase tracking-wider text-gray-500 mb-2">nDVR (rewind)</div>
-          <div className="grid grid-cols-2 gap-3">
+        <FormSection title="nDVR (rewind)">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FormField label="DVR">
               <select
                 value={form.dvr_enabled}
-                onChange={(e) =>
-                  setForm({ ...form, dvr_enabled: Number(e.target.value) as TriState })
-                }
-                className={selectClass}
+                onChange={(e) => setForm({ ...form, dvr_enabled: Number(e.target.value) as TriState })}
+                className={inputClass}
               >
                 {dvrTriOptions.map((o) => (
                   <option key={o.value} value={o.value}>
@@ -313,25 +328,13 @@ export function StreamConfigModal({
                   type="number"
                   min={0}
                   value={form.dvr_window_s}
-                  onChange={(e) =>
-                    setForm({ ...form, dvr_window_s: Number(e.target.value) })
-                  }
+                  onChange={(e) => setForm({ ...form, dvr_window_s: Number(e.target.value) })}
                   className={inputClass}
                 />
               </FormField>
             )}
           </div>
-        </div>
-
-        {/* Enabled */}
-        <label className="flex items-center gap-2 text-sm text-gray-300">
-          <input
-            type="checkbox"
-            checked={form.enabled}
-            onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-          />
-          Enabled
-        </label>
+        </FormSection>
 
         <ErrorBox msg={err} />
         <ModalActions

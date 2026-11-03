@@ -1,31 +1,103 @@
 'use client'
 
 import React, { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import { Modal } from './Modal'
+import { Button } from './ui/Button'
 
 export function FormField({
   label,
   children,
   hint,
+  error,
+  required,
 }: {
   label: string
   children: React.ReactNode
-  hint?: string
+  hint?: React.ReactNode
+  /** Validation message; shown in place of the hint. */
+  error?: string | null
+  required?: boolean
 }) {
   return (
     <div>
-      <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
+      <label className="mb-1.5 block text-[13px] font-medium text-fg-secondary">
         {label}
+        {required && <span className="ml-0.5 text-danger">*</span>}
       </label>
       {children}
-      {hint && <div className="text-xs text-gray-500 mt-1">{hint}</div>}
+      {error ? (
+        <div className="mt-1.5 text-xs text-danger">{error}</div>
+      ) : (
+        hint && <div className="mt-1.5 text-xs leading-relaxed text-fg-muted">{hint}</div>
+      )}
     </div>
   )
 }
 
+// Shared field styles. inputClass works for <input>, <select> and <textarea>.
 export const inputClass =
-  'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500'
+  'w-full h-9 rounded-md border border-border bg-canvas/60 px-3 text-sm text-fg placeholder:text-fg-muted ' +
+  'transition-colors hover:border-border-strong focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/40 ' +
+  'disabled:cursor-not-allowed disabled:opacity-60'
+
+export const textareaClass = inputClass.replace('h-9', 'min-h-[80px] py-2') + ' font-mono text-xs leading-relaxed'
+
+export const checkboxClass =
+  'h-4 w-4 rounded border-border-strong bg-canvas text-primary accent-[rgb(var(--primary))] focus:ring-primary/40'
+
+/** Checkbox with label and optional description. */
+export function CheckboxField({
+  checked,
+  onChange,
+  label,
+  description,
+  disabled,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: React.ReactNode
+  description?: React.ReactNode
+  disabled?: boolean
+}) {
+  return (
+    <label className={'flex items-start gap-2.5 ' + (disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer')}>
+      <input
+        type="checkbox"
+        className={checkboxClass + ' mt-0.5'}
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="min-w-0">
+        <span className="block text-sm text-fg">{label}</span>
+        {description && <span className="mt-0.5 block text-xs text-fg-muted">{description}</span>}
+      </span>
+    </label>
+  )
+}
+
+/** Groups related fields under a small heading inside a form. */
+export function FormSection({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <fieldset className="space-y-3 border-t border-border pt-4 first:border-0 first:pt-0">
+      <legend className="sr-only">{title}</legend>
+      <div>
+        <div className="text-[13px] font-semibold text-fg">{title}</div>
+        {description && <div className="mt-0.5 text-xs text-fg-muted">{description}</div>}
+      </div>
+      {children}
+    </fieldset>
+  )
+}
 
 export function ModalActions({
   busy,
@@ -39,23 +111,13 @@ export function ModalActions({
   return (
     // Sticky inside Modal's scrolling body, so Save stays reachable on long
     // forms; the negative margins let its background cover the body padding.
-    <div className="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-gray-800 bg-gray-900 px-5 pb-5 pt-3">
-      <button
-        type="button"
-        onClick={onCancel}
-        disabled={busy}
-        className="px-3 py-1.5 text-sm rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-      >
+    <div className="sticky bottom-0 -mx-5 -mb-5 mt-2 flex justify-end gap-2 border-t border-border bg-surface px-5 pb-5 pt-4">
+      <Button variant="secondary" size="md" onClick={onCancel} disabled={busy}>
         Cancel
-      </button>
-      <button
-        type="submit"
-        disabled={busy}
-        className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white flex items-center gap-2 transition"
-      >
-        {busy && <Loader2 size={14} className="animate-spin" />}
+      </Button>
+      <Button variant="primary" size="md" type="submit" loading={busy}>
         {submitLabel}
-      </button>
+      </Button>
     </div>
   )
 }
@@ -63,8 +125,9 @@ export function ModalActions({
 export function ErrorBox({ msg }: { msg: string | null }) {
   if (!msg) return null
   return (
-    <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2">
-      {msg}
+    <div role="alert" className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
+      <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+      <span className="min-w-0 break-words">{msg}</span>
     </div>
   )
 }
@@ -104,29 +167,20 @@ export function ConfirmDelete({
   return (
     <Modal open={open} onClose={() => !busy && onCancel()} title={title}>
       <div className="space-y-3">
-        <div className="flex gap-2 text-sm text-gray-300">
-          <AlertTriangle className="text-yellow-400 flex-shrink-0" size={18} />
-          <div>{message}</div>
+        <div className="flex gap-3 text-sm text-fg-secondary">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-danger/10 text-danger">
+            <AlertTriangle size={16} />
+          </div>
+          <div className="pt-1 leading-relaxed">{message}</div>
         </div>
         <ErrorBox msg={err} />
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="px-3 py-1.5 text-sm rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-          >
+          <Button variant="secondary" size="md" onClick={onCancel} disabled={busy}>
             Cancel
-          </button>
-          <button
-            type="button"
-            onClick={run}
-            disabled={busy}
-            className="px-3 py-1.5 text-sm rounded bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white flex items-center gap-2 transition"
-          >
-            {busy && <Loader2 size={14} className="animate-spin" />}
+          </Button>
+          <Button variant="destructive" size="md" onClick={run} loading={busy}>
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

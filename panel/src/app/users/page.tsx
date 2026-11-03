@@ -2,27 +2,37 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
-import {
-  Plus,
-  Trash2,
-  Pencil,
-  Key,
-  Users as UsersIcon,
-  Copy,
-  Check,
-  AlertTriangle,
-} from 'lucide-react'
+import { Plus, Trash2, Pencil, Key, Users as UsersIcon, AlertTriangle, ShieldCheck, Wrench, Eye } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge, BadgeVariant } from '@/components/Badge'
 import {
   FormField,
+  FormSection,
   inputClass,
   ModalActions,
   ErrorBox,
   ConfirmDelete,
   useStateReset,
 } from '@/components/FormHelpers'
+import {
+  PageHeader,
+  TableCard,
+  Table,
+  THead,
+  TH,
+  TBody,
+  TR,
+  TD,
+  RowActions,
+  Button,
+  IconButton,
+  DropdownMenu,
+  EmptyState,
+  TableSkeleton,
+  CopyField,
+  useToast,
+} from '@/components/ui'
 import {
   listUsers,
   createUser,
@@ -34,15 +44,44 @@ import {
   User,
   APIToken,
 } from '@/lib/api'
-import { formatDate, copyToClipboard } from '@/lib/utils'
+import { formatDate } from '@/lib/utils'
 
 const ROLES = ['admin', 'operator', 'viewer']
 const ALL_SCOPES = ['read', 'write', 'stream']
 
+// One look per role so they're told apart at a glance; the role text is
+// always shown too (color alone isn't a status).
 function roleVariant(r: string): BadgeVariant {
-  if (r === 'admin') return 'red'
-  if (r === 'operator') return 'yellow'
+  if (r === 'admin') return 'purple'
+  if (r === 'operator') return 'blue'
   return 'gray'
+}
+
+function RoleIcon({ role }: { role: string }) {
+  if (role === 'admin') return <ShieldCheck size={12} />
+  if (role === 'operator') return <Wrench size={12} />
+  return <Eye size={12} />
+}
+
+function RoleBadge({ role }: { role: string }) {
+  return (
+    <Badge variant={roleVariant(role)}>
+      <RoleIcon role={role} />
+      {role}
+    </Badge>
+  )
+}
+
+const ROLE_HINTS: Record<string, string> = {
+  admin: 'Full access, including users and server settings.',
+  operator: 'Manages applications, streams and sources.',
+  viewer: 'Read-only access to the panel.',
+}
+
+const SCOPE_HINTS: Record<string, string> = {
+  read: 'Read API resources',
+  write: 'Create, change and delete resources',
+  stream: 'Publish and play streams',
 }
 
 export default function UsersPage() {
@@ -54,7 +93,8 @@ export default function UsersPage() {
 }
 
 function UsersContent() {
-  const { data, mutate } = useSWR('users', listUsers, { refreshInterval: 30000 })
+  const { data, mutate, isLoading } = useSWR('users', listUsers, { refreshInterval: 30000 })
+  const toast = useToast()
   const [newOpen, setNewOpen] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
   const [deleting, setDeleting] = useState<User | null>(null)
@@ -63,83 +103,86 @@ function UsersContent() {
   const users = data ?? []
 
   return (
-    <div className="space-y-6 max-w-7xl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Users & Tokens</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Panel users and API tokens for automation
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setNewOpen(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-        >
-          <Plus size={16} />
-          New User
-        </button>
-      </div>
+    <>
+      <PageHeader
+        title="Users & Tokens"
+        description="Panel users and API tokens for automation."
+        actions={
+          <Button variant="primary" icon={<Plus size={15} />} onClick={() => setNewOpen(true)}>
+            New user
+          </Button>
+        }
+      />
 
-      {users.length === 0 ? (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-12 text-center">
-          <UsersIcon className="mx-auto text-gray-600 mb-3" size={32} />
-          <div className="text-sm text-gray-400">No users</div>
-        </div>
+      {isLoading ? (
+        <TableSkeleton rows={3} cols={4} />
+      ) : users.length === 0 ? (
+        <TableCard>
+          <EmptyState
+            icon={<UsersIcon size={20} />}
+            title="No users"
+            description="Create a user to give someone access to the panel or the API."
+            action={
+              <Button variant="primary" icon={<Plus size={15} />} onClick={() => setNewOpen(true)}>
+                New user
+              </Button>
+            }
+          />
+        </TableCard>
       ) : (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-800/50 text-xs uppercase tracking-wider text-gray-500">
+        <TableCard>
+          <Table>
+            <THead>
               <tr>
-                <th className="px-4 py-2 text-left font-medium">Email</th>
-                <th className="px-4 py-2 text-left font-medium">Role</th>
-                <th className="px-4 py-2 text-left font-medium">Created</th>
-                <th className="px-4 py-2 text-right font-medium">Actions</th>
+                <TH>Email</TH>
+                <TH>Role</TH>
+                <TH>Created</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800">
+            </THead>
+            <TBody>
               {users.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-800/30 transition">
-                  <td className="px-4 py-2.5 text-white font-medium">
-                    {u.email}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <Badge variant={roleVariant(u.role)}>{u.role}</Badge>
-                  </td>
-                  <td className="px-4 py-2.5 text-gray-400 text-xs">
+                <TR key={u.id}>
+                  <TD>
+                    <span className="font-medium text-fg">{u.email}</span>
+                  </TD>
+                  <TD>
+                    <RoleBadge role={u.role} />
+                  </TD>
+                  <TD muted className="whitespace-nowrap">
                     {formatDate(u.created_at)}
-                  </td>
-                  <td className="px-4 py-2.5 text-right">
-                    <div className="inline-flex gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setTokensFor(u)}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                      >
-                        <Key size={12} />
-                        Tokens
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditing(u)}
-                        className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                      >
-                        <Pencil size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDeleting(u)}
-                        className="px-2 py-1 text-xs rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                  </TD>
+                  <TD align="right">
+                    <RowActions>
+                      <Button size="xs" variant="secondary" icon={<Key size={13} />} onClick={() => setTokensFor(u)}>
+                        API tokens
+                      </Button>
+                      <IconButton label={`Edit ${u.email}`} size="xs" onClick={() => setEditing(u)}>
+                        <Pencil size={14} />
+                      </IconButton>
+                      <DropdownMenu
+                        label={`More actions for ${u.email}`}
+                        items={[
+                          { label: 'Edit user', icon: <Pencil size={14} />, onClick: () => setEditing(u) },
+                          { label: 'Manage API tokens', icon: <Key size={14} />, onClick: () => setTokensFor(u) },
+                          {
+                            label: 'Delete user',
+                            icon: <Trash2 size={14} />,
+                            danger: true,
+                            separator: true,
+                            onClick: () => setDeleting(u),
+                          },
+                        ]}
+                      />
+                    </RowActions>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TBody>
+          </Table>
+        </TableCard>
       )}
 
       <UserModal
@@ -148,6 +191,7 @@ function UsersContent() {
         onClose={() => setNewOpen(false)}
         onSaved={() => {
           setNewOpen(false)
+          toast.success('User created')
           mutate()
         }}
       />
@@ -157,6 +201,7 @@ function UsersContent() {
         onClose={() => setEditing(null)}
         onSaved={() => {
           setEditing(null)
+          toast.success('User saved')
           mutate()
         }}
       />
@@ -169,16 +214,14 @@ function UsersContent() {
         onConfirm={async () => {
           if (!deleting) return
           await deleteUser(deleting.id)
+          toast.success(`Deleted ${deleting.email}`)
           setDeleting(null)
           mutate()
         }}
       />
 
-      <TokensModal
-        user={tokensFor}
-        onClose={() => setTokensFor(null)}
-      />
-    </div>
+      <TokensModal user={tokensFor} onClose={() => setTokensFor(null)} />
+    </>
   )
 }
 
@@ -239,69 +282,64 @@ function UserModal({
       open={open}
       onClose={() => !busy && onClose()}
       title={edit ? 'Edit user' : 'New user'}
+      description={edit ? edit.email : 'Panel login and API token owner.'}
     >
-      <form onSubmit={onSubmit} className="space-y-3">
-        <FormField label="Email">
-          <input
-            type="email"
-            required
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            className={inputClass}
-            placeholder="user@example.com"
-          />
-        </FormField>
-        <FormField
-          label={edit ? 'New password (leave blank to keep current)' : 'Password'}
-        >
-          <input
-            type="password"
+      <form onSubmit={onSubmit} className="space-y-4">
+        <FormSection title="Sign-in">
+          <FormField label="Email" required>
+            <input
+              type="email"
+              required
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              className={inputClass}
+              placeholder="user@example.com"
+            />
+          </FormField>
+          <FormField
+            label={edit ? 'New password' : 'Password'}
             required={!edit}
-            value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
-            className={inputClass}
-            placeholder="••••••••"
-          />
-        </FormField>
-        <FormField label="Role">
-          <select
-            value={form.role}
-            onChange={(e) => setForm({ ...form, role: e.target.value })}
-            className={inputClass}
+            hint={edit ? 'Leave blank to keep the current password.' : undefined}
           >
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </FormField>
+            <input
+              type="password"
+              required={!edit}
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              className={inputClass}
+              placeholder="••••••••"
+            />
+          </FormField>
+        </FormSection>
+        <FormSection title="Permissions">
+          <FormField label="Role" hint={ROLE_HINTS[form.role]}>
+            <select
+              value={form.role}
+              onChange={(e) => setForm({ ...form, role: e.target.value })}
+              className={inputClass}
+            >
+              {ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </FormField>
+        </FormSection>
         <ErrorBox msg={err} />
-        <ModalActions
-          busy={busy}
-          onCancel={onClose}
-          submitLabel={edit ? 'Save' : 'Create'}
-        />
+        <ModalActions busy={busy} onCancel={onClose} submitLabel={edit ? 'Save' : 'Create'} />
       </form>
     </Modal>
   )
 }
 
-function TokensModal({
-  user,
-  onClose,
-}: {
-  user: User | null
-  onClose: () => void
-}) {
-  const { data, mutate } = useSWR(
-    user ? ['user-tokens', user.id] : null,
-    () => listTokens(user!.id),
-    { refreshInterval: 0 },
-  )
+function TokensModal({ user, onClose }: { user: User | null; onClose: () => void }) {
+  const { data, mutate, isLoading } = useSWR(user ? ['user-tokens', user.id] : null, () => listTokens(user!.id), {
+    refreshInterval: 0,
+  })
+  const toast = useToast()
   const [newOpen, setNewOpen] = useState(false)
   const [createdToken, setCreatedToken] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
   const [deleting, setDeleting] = useState<APIToken | null>(null)
 
   const tokens = data ?? []
@@ -313,124 +351,98 @@ function TokensModal({
         onClose={() => {
           if (!createdToken) onClose()
         }}
-        title={`Tokens for ${user?.email ?? ''}`}
+        title="API tokens"
+        description={user?.email}
         size="lg"
       >
         <div className="space-y-4">
           {createdToken && (
-            <div className="rounded-md bg-yellow-500/10 border border-yellow-500/40 p-3">
-              <div className="flex gap-2 text-sm text-yellow-300 mb-2">
-                <AlertTriangle size={16} className="flex-shrink-0" />
-                <span className="font-medium">
-                  Copy this token now — it won't be shown again.
-                </span>
+            <div className="space-y-3 rounded-md border border-warning/40 bg-warning/10 p-3">
+              <div className="flex gap-2 text-sm text-warning">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <span className="font-medium">Copy this token now. It won&apos;t be shown again.</span>
               </div>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 bg-gray-950 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 font-mono break-all">
-                  {createdToken}
-                </code>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (await copyToClipboard(createdToken)) {
-                      setCopied(true)
-                      setTimeout(() => setCopied(false), 1500)
-                    }
-                  }}
-                  className="inline-flex items-center gap-1 px-2 py-1.5 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                >
-                  {copied ? (
-                    <>
-                      <Check size={12} className="text-green-400" />
-                      Copied
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={12} />
-                      Copy
-                    </>
-                  )}
-                </button>
-              </div>
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setCreatedToken(null)}
-                  className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-                >
+              <CopyField value={createdToken} />
+              <div className="flex justify-end">
+                <Button size="xs" variant="secondary" onClick={() => setCreatedToken(null)}>
                   Done
-                </button>
+                </Button>
               </div>
             </div>
           )}
 
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-gray-200">Active tokens</h3>
-            <button
-              type="button"
-              onClick={() => setNewOpen(true)}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500 text-white transition"
-            >
-              <Plus size={14} />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-[15px] font-semibold text-fg">Active tokens</h3>
+            <Button size="sm" variant="primary" icon={<Plus size={14} />} onClick={() => setNewOpen(true)}>
               Create token
-            </button>
+            </Button>
           </div>
 
-          {tokens.length === 0 ? (
-            <div className="text-sm text-gray-500 py-4 text-center">
-              No tokens for this user
+          {isLoading ? (
+            <TableSkeleton rows={2} cols={3} />
+          ) : tokens.length === 0 ? (
+            <div className="rounded-lg border border-border">
+              <EmptyState
+                compact
+                icon={<Key size={20} />}
+                title="No tokens"
+                description="Create a token to call the API from scripts or CI."
+              />
             </div>
           ) : (
-            <div className="rounded border border-gray-800 overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-800/40 text-xs uppercase text-gray-500">
+            <TableCard>
+              <Table>
+                <THead>
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium">Name</th>
-                    <th className="px-3 py-2 text-left font-medium">Scopes</th>
-                    <th className="px-3 py-2 text-left font-medium">Created</th>
-                    <th className="px-3 py-2 text-right font-medium">Actions</th>
+                    <TH>Name</TH>
+                    <TH>Scopes</TH>
+                    <TH>Created</TH>
+                    <TH align="right">
+                      <span className="sr-only">Actions</span>
+                    </TH>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800">
+                </THead>
+                <TBody>
                   {tokens.map((t) => (
-                    <tr key={t.id} className="hover:bg-gray-800/30 transition">
-                      <td className="px-3 py-2 text-white">{t.name}</td>
-                      <td className="px-3 py-2">
+                    <TR key={t.id}>
+                      <TD>
+                        <span className="font-medium text-fg">{t.name}</span>
+                      </TD>
+                      <TD>
                         <div className="flex flex-wrap gap-1">
                           {(t.scopes || []).map((s) => (
-                            <Badge key={s} variant="blue">
+                            <Badge key={s} variant="blue" mono title={SCOPE_HINTS[s]}>
                               {s}
                             </Badge>
                           ))}
                         </div>
-                      </td>
-                      <td className="px-3 py-2 text-gray-400 text-xs">
+                      </TD>
+                      <TD muted className="whitespace-nowrap">
                         {formatDate(t.created_at)}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => setDeleting(t)}
-                          className="px-2 py-1 text-xs rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/40 transition"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </td>
-                    </tr>
+                      </TD>
+                      <TD align="right">
+                        <RowActions>
+                          <Button
+                            size="xs"
+                            variant="danger-outline"
+                            icon={<Trash2 size={13} />}
+                            onClick={() => setDeleting(t)}
+                          >
+                            Revoke
+                          </Button>
+                        </RowActions>
+                      </TD>
+                    </TR>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </TBody>
+              </Table>
+            </TableCard>
           )}
 
-          <div className="flex justify-end pt-2 border-t border-gray-800">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 text-sm rounded bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition"
-            >
+          <div className="flex justify-end border-t border-border pt-4">
+            <Button size="md" variant="secondary" onClick={onClose}>
               Close
-            </button>
+            </Button>
           </div>
         </div>
       </Modal>
@@ -443,6 +455,7 @@ function TokensModal({
           onCreated={(tok) => {
             setNewOpen(false)
             setCreatedToken(tok)
+            toast.success('Token created')
             mutate()
           }}
         />
@@ -450,13 +463,14 @@ function TokensModal({
 
       <ConfirmDelete
         open={!!deleting}
-        title="Delete API token"
+        title="Revoke API token"
         message={`Revoke token "${deleting?.name ?? ''}"? Apps using this token will lose access immediately.`}
         confirmLabel="Revoke"
         onCancel={() => setDeleting(null)}
         onConfirm={async () => {
           if (!deleting || !user) return
           await deleteToken(user.id, deleting.id)
+          toast.success(`Revoked token "${deleting.name}"`)
           setDeleting(null)
           mutate()
         }}
@@ -490,9 +504,7 @@ function CreateTokenModal({
   })
 
   const toggle = (s: string) => {
-    setScopes((cur) =>
-      cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s],
-    )
+    setScopes((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]))
   }
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -514,9 +526,10 @@ function CreateTokenModal({
       open={open}
       onClose={() => !busy && onClose()}
       title="Create API token"
+      description="The token is shown once, right after it's created."
     >
-      <form onSubmit={onSubmit} className="space-y-3">
-        <FormField label="Name">
+      <form onSubmit={onSubmit} className="space-y-4">
+        <FormField label="Name" required hint="Something that says where it's used.">
           <input
             required
             value={name}
@@ -527,33 +540,28 @@ function CreateTokenModal({
         </FormField>
         <FormField label="Scopes">
           <div className="flex flex-wrap gap-2">
-            {ALL_SCOPES.map((s) => (
-              <label
-                key={s}
-                className={
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded border cursor-pointer text-xs transition ' +
-                  (scopes.includes(s)
-                    ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
-                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600')
-                }
-              >
-                <input
-                  type="checkbox"
-                  className="hidden"
-                  checked={scopes.includes(s)}
-                  onChange={() => toggle(s)}
-                />
-                {s}
-              </label>
-            ))}
+            {ALL_SCOPES.map((s) => {
+              const on = scopes.includes(s)
+              return (
+                <label
+                  key={s}
+                  title={SCOPE_HINTS[s]}
+                  className={
+                    'flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs transition-colors focus-within:ring-2 focus-within:ring-primary/40 ' +
+                    (on
+                      ? 'border-primary/50 bg-primary/15 text-primary-fg'
+                      : 'border-border bg-elevated text-fg-secondary hover:border-border-strong')
+                  }
+                >
+                  <input type="checkbox" className="sr-only" checked={on} onChange={() => toggle(s)} />
+                  {s}
+                </label>
+              )
+            })}
           </div>
         </FormField>
         <ErrorBox msg={err} />
-        <ModalActions
-          busy={busy}
-          onCancel={onClose}
-          submitLabel="Create"
-        />
+        <ModalActions busy={busy} onCancel={onClose} submitLabel="Create" />
       </form>
     </Modal>
   )
