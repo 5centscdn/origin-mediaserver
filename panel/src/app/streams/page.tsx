@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import {
   Radio,
@@ -10,12 +10,86 @@ import {
   Loader2,
   ExternalLink,
   RefreshCw,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Modal } from '@/components/Modal'
 import { Badge } from '@/components/Badge'
 import { listStreams, kickStream, reloadStream, Stream } from '@/lib/api'
-import { formatBytes, formatUptime, copyToClipboard } from '@/lib/utils'
+import { formatBytes, formatUptime, formatBitrate, copyToClipboard } from '@/lib/utils'
+
+type SortKey = 'name' | 'app' | 'source' | 'uptime' | 'viewers' | 'bitrate' | 'bytes' | 'codec'
+type SortState = { key: SortKey; dir: 'asc' | 'desc' }
+
+const SORT_STORAGE = 'liveStreams.sort'
+const DEFAULT_SORT: SortState = { key: 'app', dir: 'asc' }
+
+// sortValue is what each sortable column compares on.
+function sortValue(s: Stream, key: SortKey): string | number {
+  switch (key) {
+    case 'name':
+      return s.name.toLowerCase()
+    case 'app':
+      return s.app.toLowerCase()
+    case 'source':
+      return (s.source_type || '').toLowerCase()
+    case 'uptime':
+      return s.uptime_s
+    case 'viewers':
+      return s.subscribers
+    case 'bitrate':
+      return s.bitrate_bps ?? 0
+    case 'bytes':
+      return s.bytes_in
+    case 'codec':
+      return (s.codec || '').toLowerCase()
+  }
+}
+
+// sortStreams orders rows by the chosen column, then app/name so equal
+// values (e.g. 0 viewers) keep a fixed order across refreshes instead of
+// jumping around.
+function sortStreams(list: Stream[], sort: SortState): Stream[] {
+  const mul = sort.dir === 'asc' ? 1 : -1
+  return [...list].sort((a, b) => {
+    const va = sortValue(a, sort.key)
+    const vb = sortValue(b, sort.key)
+    if (va < vb) return -1 * mul
+    if (va > vb) return 1 * mul
+    return a.app.localeCompare(b.app) || a.name.localeCompare(b.name)
+  })
+}
+
+function SortHeader({
+  label,
+  k,
+  sort,
+  onSort,
+}: {
+  label: string
+  k: SortKey
+  sort: SortState
+  onSort: (k: SortKey) => void
+}) {
+  const active = sort.key === k
+  const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown
+  return (
+    <th className="px-4 py-2 text-left font-medium">
+      <button
+        type="button"
+        onClick={() => onSort(k)}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider hover:text-gray-200 transition ${
+          active ? 'text-gray-200' : ''
+        }`}
+      >
+        {label}
+        <Icon size={12} className={active ? '' : 'opacity-40'} />
+      </button>
+    </th>
+  )
+}
 
 export default function StreamsPage() {
   return (
@@ -39,7 +113,28 @@ function StreamsContent() {
   const [reloadedId, setReloadedId] = useState<string | null>(null)
   const [reloadErr, setReloadErr] = useState<string | null>(null)
 
-  const streams = data ?? []
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
+  // Remember the chosen column across visits (per browser).
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SORT_STORAGE) || 'null')
+      if (saved?.key && saved?.dir) setSort(saved)
+    } catch {}
+  }, [])
+  const onSort = (key: SortKey) => {
+    // Numbers start high-to-low (busiest first), text A-Z; a second click flips.
+    const numeric = ['uptime', 'viewers', 'bitrate', 'bytes'].includes(key)
+    const next: SortState =
+      sort.key === key
+        ? { key, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: numeric ? 'desc' : 'asc' }
+    setSort(next)
+    try {
+      localStorage.setItem(SORT_STORAGE, JSON.stringify(next))
+    } catch {}
+  }
+
+  const streams = useMemo(() => sortStreams(data ?? [], sort), [data, sort])
 
   const doKick = async () => {
     if (!kickTarget) return
@@ -152,13 +247,14 @@ function StreamsContent() {
           <table className="w-full text-sm">
             <thead className="bg-gray-800/50 text-gray-400 text-xs uppercase tracking-wider">
               <tr>
-                <th className="px-4 py-2 text-left font-medium">Stream</th>
-                <th className="px-4 py-2 text-left font-medium">App</th>
-                <th className="px-4 py-2 text-left font-medium">Source</th>
-                <th className="px-4 py-2 text-left font-medium">Uptime</th>
-                <th className="px-4 py-2 text-left font-medium">Viewers</th>
-                <th className="px-4 py-2 text-left font-medium">Bytes In</th>
-                <th className="px-4 py-2 text-left font-medium">Codec</th>
+                <SortHeader label="Stream" k="name" sort={sort} onSort={onSort} />
+                <SortHeader label="App" k="app" sort={sort} onSort={onSort} />
+                <SortHeader label="Source" k="source" sort={sort} onSort={onSort} />
+                <SortHeader label="Uptime" k="uptime" sort={sort} onSort={onSort} />
+                <SortHeader label="Viewers" k="viewers" sort={sort} onSort={onSort} />
+                <SortHeader label="Bitrate" k="bitrate" sort={sort} onSort={onSort} />
+                <SortHeader label="Bytes In" k="bytes" sort={sort} onSort={onSort} />
+                <SortHeader label="Codec" k="codec" sort={sort} onSort={onSort} />
                 <th className="px-4 py-2 text-right font-medium">Actions</th>
               </tr>
             </thead>
@@ -187,6 +283,9 @@ function StreamsContent() {
                     {formatUptime(s.uptime_s)}
                   </td>
                   <td className="px-4 py-3 text-gray-300">{s.subscribers}</td>
+                  <td className="px-4 py-3 text-gray-300 whitespace-nowrap">
+                    {s.bitrate_bps ? formatBitrate(s.bitrate_bps) : '—'}
+                  </td>
                   <td className="px-4 py-3 text-gray-300">
                     {formatBytes(s.bytes_in)}
                   </td>

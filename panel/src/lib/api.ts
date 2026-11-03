@@ -229,6 +229,7 @@ export interface Stream {
   started_at: string
   uptime_s: number
   bytes_in: number
+  bitrate_bps?: number
   subscribers: number
   codec?: string
 }

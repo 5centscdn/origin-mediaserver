@@ -30,6 +30,13 @@ type Bus struct {
 	// a *Bus, mirroring why CodecInfo lives here too.
 	bytesIn atomic.Int64
 
+	// rate* back IngestBitrate: a sample of bytesIn, and the rate measured
+	// between the last two samples (at least rateWindow apart).
+	rateMu    sync.Mutex
+	rateBytes int64
+	rateAt    time.Time
+	rateBps   int64
+
 	// lastMedia is when the last audio/video packet was published (unix
 	// nanoseconds, 0 = never). The pull manager's fallback watchdog uses it
 	// to tell a live upstream from one that connected but sends nothing.
@@ -123,6 +130,29 @@ func (b *Bus) LastMediaAt() time.Time {
 // AddBytesIn atomically adds n to the running ingest byte counter.
 func (b *Bus) AddBytesIn(n int64) {
 	b.bytesIn.Add(n)
+}
+
+// rateWindow is the shortest span IngestBitrate measures over: short
+// enough to follow the source, long enough to smooth GOP-sized bursts.
+const rateWindow = 5 * time.Second
+
+// IngestBitrate returns the recent ingest rate in bits per second. It's
+// measured lazily: each call at least rateWindow after the previous sample
+// takes a new one, so the value follows the source rather than averaging
+// over the stream's whole life. 0 until two samples exist.
+func (b *Bus) IngestBitrate() int64 {
+	b.rateMu.Lock()
+	defer b.rateMu.Unlock()
+	now, n := time.Now(), b.bytesIn.Load()
+	if b.rateAt.IsZero() {
+		b.rateBytes, b.rateAt = n, now
+		return 0
+	}
+	if el := now.Sub(b.rateAt); el >= rateWindow {
+		b.rateBps = int64(float64(n-b.rateBytes) * 8 / el.Seconds())
+		b.rateBytes, b.rateAt = n, now
+	}
+	return b.rateBps
 }
 
 // BytesIn atomically reads the running ingest byte counter.

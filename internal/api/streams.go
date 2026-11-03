@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type streamResponse struct {
 	StartedAt   time.Time `json:"started_at"`
 	UptimeS     int64     `json:"uptime_s"`
 	BytesIn     int64     `json:"bytes_in"`
+	BitrateBps  int64     `json:"bitrate_bps"` // recent ingest rate (media.Bus.IngestBitrate)
 	Subscribers int       `json:"subscribers"`
 	Codec       string    `json:"codec,omitempty"`
 }
@@ -46,6 +48,7 @@ func streamToResponse(s *media.Stream) streamResponse {
 		StartedAt:  s.StartedAt,
 		UptimeS:    int64(time.Since(s.StartedAt).Seconds()),
 		BytesIn:    s.Bus.BytesIn(),
+		BitrateBps: s.Bus.IngestBitrate(),
 		// Subscribers reflects real concurrent HLS/DASH viewers (see
 		// media.ViewerTracker), not Bus.SubscriberCount — that count also
 		// includes internal per-stream packet consumers (HLS packager, DVR
@@ -86,6 +89,14 @@ func (s *Server) handleListStreams(w http.ResponseWriter, r *http.Request) {
 	for _, stream := range all {
 		out = append(out, streamToResponse(stream))
 	}
+	// The registry is a map: without this the order changed on every
+	// request and rows jumped around in the panel.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].App != out[j].App {
+			return out[i].App < out[j].App
+		}
+		return out[i].Name < out[j].Name
+	})
 	data, _ := json.Marshal(out)
 	jsonOK(w, data)
 }
