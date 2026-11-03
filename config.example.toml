@@ -283,6 +283,8 @@ password = "admin"
 #   disk    always disk (page cache still keeps hot segments in RAM).
 # Memory use is the higher of the system's and this service's cgroup limit
 # (if set), not counting reclaimable page cache.
+# The panel (Settings → Live cache → Edit) can change these without a
+# restart; once saved there, the panel's values override this section.
 [live_cache]
 mode             = "hybrid"
 memory_high_pct  = 90

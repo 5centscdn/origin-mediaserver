@@ -85,17 +85,26 @@ func main() {
 
 	// ── Open embedded SQLite database ────────────────────────────────────────
 	// modernc.org/sqlite is a pure-Go SQLite port — no CGO, no external .so.
-	// Live HLS/DASH output is served from RAM; under memory pressure it
-	// moves to disk instead of risking an OOM kill (internal/livestore).
-	livestore.Default().StartMonitor(cfg.LiveCache.Mode, cfg.LiveCache.MemoryHighPct, cfg.LiveCache.MemoryLowPct,
-		time.Duration(cfg.LiveCache.CheckIntervalS)*time.Second)
-
 	database, err := dbpkg.Open(ctx, cfg.Server.DataDir)
 	if err != nil {
 		slog.Error("open database", "err", err)
 		os.Exit(1)
 	}
 	defer database.Close()
+
+	// Live HLS/DASH output is served from RAM; under memory pressure it
+	// moves to disk instead of risking an OOM kill (internal/livestore).
+	// A choice saved from the panel's Settings page wins over config.toml.
+	lc := cfg.LiveCache
+	var saved api.LiveCacheSetting
+	if ok, err := database.GetSetting(ctx, api.LiveCacheSettingKey, &saved); err != nil {
+		slog.Warn("read saved live cache setting", "err", err)
+	} else if ok {
+		lc.Mode, lc.MemoryHighPct, lc.MemoryLowPct = saved.Mode, saved.MemoryHighPct, saved.MemoryLowPct
+		slog.Info("live cache: using the setting saved from the panel (overrides config.toml)")
+	}
+	livestore.Default().StartMonitor(lc.Mode, lc.MemoryHighPct, lc.MemoryLowPct,
+		time.Duration(lc.CheckIntervalS)*time.Second)
 
 	// ── Core components ──────────────────────────────────────────────────────
 	registry := media.NewRegistry()

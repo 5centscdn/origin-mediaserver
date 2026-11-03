@@ -603,6 +603,20 @@ export async function updateDVRConfig(data: { window_seconds: number; enabled?: 
   })
 }
 
+export interface LiveCacheSetting {
+  mode: 'hybrid' | 'memory' | 'disk'
+  memory_high_pct: number
+  memory_low_pct: number
+}
+
+// Applied at once and saved (overrides config.toml's [live_cache]).
+export async function updateLiveCacheConfig(data: LiveCacheSetting): Promise<void> {
+  await apiFetch<void>('/live-cache-config', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+}
+
 // ---------- DVR ----------
 
 export interface DVRInfo {

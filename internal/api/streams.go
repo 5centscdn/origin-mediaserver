@@ -1168,6 +1168,51 @@ func (s *Server) handleUpdateDVRConfig(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ─── Live cache config ───────────────────────────────────────────────────────
+
+// LiveCacheSettingKey is the settings-table key the panel's live cache
+// choice is saved under; cmd/server applies it over config.toml at startup.
+const LiveCacheSettingKey = "live_cache"
+
+// LiveCacheSetting is the stored form of the panel's live cache choice.
+type LiveCacheSetting struct {
+	Mode          string `json:"mode"`
+	MemoryHighPct int    `json:"memory_high_pct"`
+	MemoryLowPct  int    `json:"memory_low_pct"`
+}
+
+// handleUpdateLiveCacheConfig changes where live HLS/DASH output is kept
+// (internal/livestore) without a restart, and saves the choice so it
+// survives one.
+func (s *Server) handleUpdateLiveCacheConfig(w http.ResponseWriter, r *http.Request) {
+	var req LiveCacheSetting
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	switch req.Mode {
+	case "hybrid", "memory", "disk":
+	default:
+		jsonError(w, http.StatusBadRequest, `mode must be "hybrid", "memory" or "disk"`)
+		return
+	}
+	if req.MemoryHighPct < 10 || req.MemoryHighPct > 99 {
+		jsonError(w, http.StatusBadRequest, "memory_high_pct must be 10-99")
+		return
+	}
+	if req.MemoryLowPct < 5 || req.MemoryLowPct >= req.MemoryHighPct {
+		jsonError(w, http.StatusBadRequest, "memory_low_pct must be at least 5 and below memory_high_pct")
+		return
+	}
+	if err := s.db.SetSetting(r.Context(), LiveCacheSettingKey, req); err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	livestore.Default().Configure(req.Mode, req.MemoryHighPct, req.MemoryLowPct)
+	data, _ := json.Marshal(livestore.Default().Status())
+	jsonOK(w, data)
+}
+
 // ─── Server management (multi-server) ────────────────────────────────────────
 
 func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {

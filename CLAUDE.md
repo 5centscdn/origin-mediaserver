@@ -66,7 +66,10 @@ make urls          # prints example ingest/playback URLs
     memory doesn't get the server OOM-killed; `memory` only warns;
     `disk` always writes to disk. Mode, memory use, sizes and any
     warning are in `live_cache` in `GET /api/v1/node`, and the panel
-    shows the warning as a banner on every page.
+    shows the warning as a banner on every page. Settings → Live cache →
+    Edit (`PUT /api/v1/live-cache-config`) changes mode and thresholds
+    without a restart and saves them in the `settings` table (schema
+    v15), which overrides config.toml at startup.
   - `hls`: TS/fMP4/CMAF, LL-HLS, ad markers
   - `dash`: MPD, DVB-DASH, timeshift
   - `tsout`: continuous HTTP MPEG-TS

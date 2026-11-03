@@ -101,6 +101,7 @@ var migrations = []migration{
 	{12, schemav12},
 	{13, schemav13},
 	{14, schemav14},
+	{15, schemav15},
 }
 
 // ─── Schema v1: core tables ───────────────────────────────────────────────────
@@ -470,6 +471,16 @@ ALTER TABLE applications ADD COLUMN push_password TEXT NOT NULL DEFAULT '';
 // often it checks whether the primary is back (Nimble's "Fallback URLs" and
 // "Primary check interval"). fallback_urls is newline-separated, in order.
 // primary_check_s = 0 never switches back on its own.
+// schemav15: server-wide settings changed from the panel, which override
+// config.toml (e.g. "live_cache"). Values are JSON.
+const schemav15 = `
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
 const schemav14 = `
 ALTER TABLE pull_sources ADD COLUMN fallback_urls   TEXT NOT NULL DEFAULT '';
 ALTER TABLE pull_sources ADD COLUMN primary_check_s INTEGER NOT NULL DEFAULT 30;

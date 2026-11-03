@@ -128,11 +128,12 @@ func (s *Store) check() {
 	}
 }
 
-// StartMonitor sets the storage mode ("hybrid", "memory" or "disk"; see
-// the package doc) and checks memory every interval: hybrid switches
-// storage at highPct/lowPct, and every mode reports the reading in
-// Status. Call once at startup.
-func (s *Store) StartMonitor(mode string, highPct, lowPct int, interval time.Duration) {
+// Configure sets the storage mode ("hybrid", "memory" or "disk"; see the
+// package doc) and thresholds, and applies them at once: disk moves what's
+// in RAM to disk, memory sends new files to RAM again, hybrid decides from
+// the current memory reading. Safe to call while serving (the panel's
+// Settings page does).
+func (s *Store) Configure(mode string, highPct, lowPct int) {
 	switch mode {
 	case "memory", "disk":
 	default:
@@ -141,11 +142,27 @@ func (s *Store) StartMonitor(mode string, highPct, lowPct int, interval time.Dur
 	s.mu.Lock()
 	s.policy, s.highPct, s.lowPct = mode, highPct, lowPct
 	s.mu.Unlock()
-	if mode == "disk" {
-		s.setDiskMode(true)
-	}
 	slog.Info("live cache", "mode", mode, "memory_high_pct", highPct, "memory_low_pct", lowPct)
+	switch mode {
+	case "disk":
+		s.setDiskMode(true)
+	case "memory":
+		s.setDiskMode(false)
+	default:
+		// Hybrid: back to RAM unless memory is already high (then check
+		// below keeps it on disk, or moves it there).
+		if pct := memUsedPct(); pct < float64(highPct) {
+			s.setDiskMode(false)
+		}
+	}
 	s.check()
+}
+
+// StartMonitor configures the store (see Configure) and checks memory
+// every interval: hybrid switches storage at the thresholds, and every
+// mode reports the reading in Status. Call once at startup.
+func (s *Store) StartMonitor(mode string, highPct, lowPct int, interval time.Duration) {
+	s.Configure(mode, highPct, lowPct)
 	go func() {
 		for range time.Tick(interval) {
 			s.check()

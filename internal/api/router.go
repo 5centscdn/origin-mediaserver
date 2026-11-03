@@ -217,6 +217,9 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/dvr-config", s.handleGetDVRConfig)
 				r.Put("/dvr-config", s.handleUpdateDVRConfig)
 
+				// Live cache (where live HLS/DASH is kept); read via GET /node
+				r.Put("/live-cache-config", s.handleUpdateLiveCacheConfig)
+
 				// Applications + per-stream configs
 				r.Get("/applications", s.handleListApplications)
 				r.Post("/applications", s.handleCreateApplication)
