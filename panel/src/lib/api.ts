@@ -730,3 +730,75 @@ export async function updateStreamConfig(appId: string, sid: string, data: Parti
 export async function deleteStreamConfig(appId: string, sid: string): Promise<void> {
   await apiFetch<void>(`/applications/${encodeURIComponent(appId)}/streams/${encodeURIComponent(sid)}`, { method: 'DELETE' })
 }
+
+// ---------- Monitoring (internal/sysmon) ----------
+
+export interface MonitorUsage {
+  path?: string
+  total: number
+  used: number
+  pct: number
+}
+
+export interface MonitorService {
+  name: string
+  proto: 'tcp' | 'udp'
+  listen: string
+  status: 'up' | 'down' | 'disabled' | 'unknown'
+  enabled: boolean
+}
+
+// Null fields couldn't be measured (non-Linux host, unreadable /proc).
+export interface MonitorSnapshot {
+  time: number
+  interval_s: number
+  host: { hostname: string; cores: number; uptime_s: number | null }
+  process: { uptime_s: number; rss_bytes: number | null; cpu_pct: number | null; goroutines: number }
+  cpu_pct: number | null
+  memory: MonitorUsage | null
+  disk: MonitorUsage | null
+  dvr_disk: MonitorUsage | null
+  dvr_bytes: number | null
+  network: { in_bps: number | null; out_bps: number | null; ingest_bps: number }
+  connections: { http: number; rtmp: number; total: number } | null
+  services: MonitorService[]
+  streams: { active: number; stalled: number; viewers: number }
+  totals: {
+    since: number
+    bytes_in: number
+    published: number
+    ended: number
+    pull_attempts: number
+    pull_failures: number
+  }
+  live_cache: NonNullable<NodeInfo['live_cache']>
+  abr_groups_live: number
+}
+
+export interface MonitorSample {
+  t: number
+  net_in_bps: number | null
+  net_out_bps: number | null
+  ingest_bps: number
+  cpu_pct: number | null
+  proc_cpu_pct: number | null
+  mem_pct: number | null
+  streams: number
+  viewers: number
+  published: number
+  ended: number
+  pull_attempts: number
+  pull_failures: number
+}
+
+export type MonitorRange = '5m' | '15m' | '1h' | '24h'
+
+export async function getMonitor(): Promise<MonitorSnapshot> {
+  return apiFetch<MonitorSnapshot>('/monitor')
+}
+
+export async function getMonitorHistory(
+  range: MonitorRange,
+): Promise<{ range: MonitorRange; step_s: number; samples: MonitorSample[] }> {
+  return apiFetch(`/monitor/history?range=${range}`)
+}

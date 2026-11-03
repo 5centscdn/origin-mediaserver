@@ -106,6 +106,15 @@ make urls          # prints example ingest/playback URLs
 - `node`: multi-node peer discovery over NATS heartbeats
   (`GET /api/v1/nodes`). It's discovery only, not central management.
 - `metrics`: Prometheus.
+- `sysmon`: dashboard monitoring. One goroutine samples `/proc` and statfs
+  every 5 s (CPU, memory, disks, host NIC throughput, established
+  connections on the HTTP/RTMP ports, listener health from the kernel
+  socket tables, ingest bytes, stream and pull events). No process spawning,
+  about 1 ms per sample. History is two fixed rings: 5 s points for 1 h and
+  1-minute averages for 24 h. Served by `GET /api/v1/monitor` (snapshot) and
+  `/monitor/history?range=5m|15m|1h|24h`. Event counters come from
+  `media.Registry.EventCounts` and `pull.Manager.Stats`. Linux only;
+  elsewhere fields are null and the panel shows them as unavailable.
 - `panel/`: Next.js 14 management UI with pages for dashboard, streams,
   applications, ABR, pull, DVR, failover, servers, users, settings and login.
   Design system:

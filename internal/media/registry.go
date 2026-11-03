@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -114,6 +115,17 @@ type Registry struct {
 	streams map[StreamKey]*Stream
 	// ABR groups: group name → list of variant stream keys (ordered by index)
 	abrGroups map[StreamKey][]*Stream // keyed by {app, group name}
+
+	// published/ended count Register/Unregister calls since start, for the
+	// dashboard's stream event history (internal/sysmon).
+	published atomic.Int64
+	ended     atomic.Int64
+}
+
+// EventCounts returns how many streams have started and ended since the
+// process started (every publish, pull connect, failover backup, ...).
+func (r *Registry) EventCounts() (published, ended int64) {
+	return r.published.Load(), r.ended.Load()
 }
 
 // NewRegistry creates an empty Registry.
@@ -145,6 +157,7 @@ func (r *Registry) Register(s *Stream) error {
 	}
 
 	r.streams[s.Key] = s
+	r.published.Add(1)
 
 	if s.ABRGroup != "" {
 		gk := StreamKey{App: s.Key.App, Name: s.ABRGroup}
@@ -176,6 +189,7 @@ func (r *Registry) Unregister(stream *Stream) {
 
 	current.Bus.Close()
 	delete(r.streams, stream.Key)
+	r.ended.Add(1)
 
 	if current.ABRGroup != "" {
 		gk := StreamKey{App: current.Key.App, Name: current.ABRGroup}

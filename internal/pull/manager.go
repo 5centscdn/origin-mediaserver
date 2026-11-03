@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/db"
@@ -131,6 +132,20 @@ type Manager struct {
 
 	mu      sync.Mutex
 	workers map[string]*worker // keyed by pull_sources.id
+
+	// attempts/failures count connection attempts (each URL tried, including
+	// reconnects and fallback switches) and attempts that ended in an error
+	// or a stall, for the dashboard (internal/sysmon).
+	attempts atomic.Int64
+	failures atomic.Int64
+}
+
+// Stats returns pull connection attempts and failures since start. Nil-safe.
+func (m *Manager) Stats() (attempts, failures int64) {
+	if m == nil {
+		return 0, 0
+	}
+	return m.attempts.Load(), m.failures.Load()
 }
 
 // worker identifies one running pull attempt. It's a pointer (not just a bare
@@ -284,6 +299,7 @@ func (m *Manager) run(ctx context.Context, w *worker, source db.PullSource, tm t
 				go m.OnLive(stream)
 			}
 			log.Info("pull source connecting", "protocol", a.protocol, "url", a.url, "fallback", idx)
+			m.attempts.Add(1)
 
 			sctx, scancel := context.WithCancel(ctx)
 			var stallC <-chan struct{}
@@ -306,9 +322,11 @@ func (m *Manager) run(ctx context.Context, w *worker, source db.PullSource, tm t
 			case <-a.done:
 				if a.err != nil && ctx.Err() == nil {
 					log.Error("pull source ended", "url", a.url, "err", a.err)
+					m.failures.Add(1)
 				}
 			case <-stallC:
 				log.Warn("pull source sent no media, giving up on it", "url", a.url, "after", tm.stall)
+				m.failures.Add(1)
 				a.stop()
 			case p := <-probeC:
 				log.Info("primary is back, switching to it", "url", p.url)

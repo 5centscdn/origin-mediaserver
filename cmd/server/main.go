@@ -34,6 +34,7 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/scte35ctrl"
 	"github.com/5centscdn/origin-mediaserver/internal/srt"
 	"github.com/5centscdn/origin-mediaserver/internal/streamoutputs"
+	"github.com/5centscdn/origin-mediaserver/internal/sysmon"
 	"github.com/5centscdn/origin-mediaserver/internal/webrtc"
 )
 
@@ -191,6 +192,34 @@ func main() {
 	}
 
 	apiServer := api.New(ctx, cfg, database, registry, dvrEngine, failoverMgr, pullMgr, hlsPlaylists, webrtcMgr, nodeMgr, m, scte35Mgr)
+
+	// Dashboard metrics: one goroutine sampling /proc every 5 s.
+	monCfg := sysmon.Config{
+		DataDir:    cfg.Server.DataDir,
+		DVRPath:    cfg.DVR.StoragePath,
+		HTTPListen: cfg.HTTP.Listen,
+		RTMPListen: cfg.RTMP.Listen,
+	}
+	if cfg.HTTP.TLSEnabled {
+		monCfg.HTTPSListen = cfg.HTTP.TLSListen
+	}
+	if cfg.RTMP.TLSEnabled {
+		monCfg.RTMPSListen = cfg.RTMP.TLSListen
+	}
+	if cfg.SRT.Enabled {
+		monCfg.SRTListen = cfg.SRT.Listen
+	}
+	monitor := sysmon.New(monCfg, sysmon.Sources{
+		Registry:  registry,
+		PullStats: pullMgr.Stats,
+		DVRBytes: func(ctx context.Context) (int64, error) {
+			var n int64
+			err := database.QueryRowContext(ctx, `SELECT COALESCE(SUM(size_bytes), 0) FROM dvr_segments`).Scan(&n)
+			return n, err
+		},
+	})
+	go monitor.Run(ctx)
+	apiServer.SetMonitor(monitor)
 	if err := apiServer.EnsureBootstrapAdmin(ctx); err != nil {
 		slog.Error("bootstrap admin", "err", err)
 		os.Exit(1)

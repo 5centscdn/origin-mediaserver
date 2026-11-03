@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/5centscdn/origin-mediaserver/internal/sysmon"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -25,6 +27,7 @@ import (
 
 // Server holds all dependencies for the HTTP layer.
 type Server struct {
+	monitor      *sysmon.Collector // dashboard metrics; nil = /monitor returns 503
 	cfg          *config.Config
 	db           *db.DB
 	registry     *media.Registry
@@ -216,6 +219,10 @@ func (s *Server) Handler() http.Handler {
 				// DVR config
 				r.Get("/dvr-config", s.handleGetDVRConfig)
 				r.Put("/dvr-config", s.handleUpdateDVRConfig)
+
+				// Dashboard monitoring (internal/sysmon)
+				r.Get("/monitor", s.handleMonitor)
+				r.Get("/monitor/history", s.handleMonitorHistory)
 
 				// Live cache (where live HLS/DASH is kept); read via GET /node
 				r.Put("/live-cache-config", s.handleUpdateLiveCacheConfig)

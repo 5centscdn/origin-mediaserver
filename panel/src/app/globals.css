@@ -30,6 +30,13 @@
   --danger-strong: 220 38 38; /* #DC2626 filled buttons */
   --info: 56 189 248; /* #38BDF8 */
 
+  /* Chart series (categorical, in fixed order). Dark-mode steps of the
+     data-viz reference palette, validated against --surface: CVD ΔE ≥ 9.4,
+     normal-vision ΔE ≥ 26.5, ≥ 3:1 contrast. Never reuse for status. */
+  --series-1: #3987e5; /* blue */
+  --series-2: #d95926; /* orange */
+  --series-3: #199e70; /* aqua */
+
   /* Legacy scales remapped onto the palette (see tailwind.config.ts). */
   --gray-50: 248 250 252;
   --gray-100: 241 245 249;
