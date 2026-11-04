@@ -273,3 +273,59 @@ func TestHandleAudioOnlyTS_IcecastMP3ProducesRealSegments(t *testing.T) {
 		t.Fatalf("got %d .ts segment(s), want at least 2 — segment-cut-by-duration for an audio-only source isn't working: %v", len(segFiles), segFiles)
 	}
 }
+
+// TestHandleVideo_TimestampResetKeepsCutting reproduces an IPTV restreamer
+// that reset its MPEG-TS clock mid-connection (from ~1000 s back to ~40 s).
+// Before tsJump, keyframe DTS - segStartDTS stayed negative after the
+// reset, so no segment was cut and the playlist went stale. Now the open
+// segment is closed at the reset and cutting resumes on the new clock,
+// with the first new segment marked as a discontinuity.
+func TestHandleVideo_TimestampResetKeepsCutting(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.HLS.Container = "ts"
+	cfg.HLS.SegmentDurationS = 2
+	cfg.HLS.PlaylistWindow = 50
+
+	stream := &media.Stream{Key: media.StreamKey{App: "test", Name: "reset"}, Bus: media.NewBus()}
+	stream.Bus.SetCodecInfo(&media.CodecInfo{VideoCodec: media.CodecH264, SPSNALu: []byte{0x67, 0x42, 0xC0, 0x1E}, PPSNALu: []byte{0x68, 0xCE}})
+	p, err := NewPackager(cfg, stream, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewPackager: %v", err)
+	}
+
+	// 30 fps, keyframe every second.
+	const frame = 3000
+	feed := func(start int64, frames int) {
+		for i := 0; i < frames; i++ {
+			dts := start + int64(i)*frame
+			key := i%30 == 0
+			data := []byte{0, 0, 0, 1, 0x41, 1}
+			if key {
+				data = []byte{0, 0, 0, 1, 0x65, 1}
+			}
+			if err := p.handleVideo(&media.Packet{Type: media.PacketMedia, Codec: media.CodecH264, IsKeyframe: key, DTS: dts, PTS: dts, Data: data}); err != nil {
+				t.Fatalf("handleVideo: %v", err)
+			}
+		}
+	}
+	feed(1000*90000, 30*7) // 7 s on the old clock
+	before := len(p.playlist.segments)
+	feed(40*90000, 30*9) // clock resets to 40 s, 9 s more
+	segs := p.playlist.segments
+
+	if before == 0 || len(segs) < before+4 {
+		t.Fatalf("segments: %d before reset, %d after; want at least 4 new ones", before, len(segs))
+	}
+	var disc int
+	for _, s := range segs {
+		if s.DurationS <= 0 || s.DurationS > 3 {
+			t.Errorf("segment %d duration %.3f s, want (0, 3]", s.Seq, s.DurationS)
+		}
+		if s.IsDiscont {
+			disc++
+		}
+	}
+	if disc != 1 || !segs[before+1].IsDiscont {
+		t.Errorf("want exactly the first post-reset segment (index %d) marked discontinuous, got %d marked", before+1, disc)
+	}
+}

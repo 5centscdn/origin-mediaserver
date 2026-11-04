@@ -48,6 +48,11 @@ type Packager struct {
 	// timestamps and codec parameters this one doesn't share.
 	discontNext   bool
 	keyframeCount int
+	// lastDTS/lastDelta follow the segment-driving track (video, or audio
+	// for audio-only sources) so tsJump can spot a source timestamp reset.
+	lastDTS   int64
+	lastDelta int64
+	haveLast  bool
 
 	// fMP4/CMAF state (used when cfg.HLS.Container is "fmp4" or "cmaf").
 	// One combined .m4s per segment: two independent single-track muxers
@@ -314,6 +319,10 @@ func (p *Packager) handleVideo(pkt *media.Packet) error {
 		}
 	}
 
+	if err := p.tsJump(pkt.DTS); err != nil {
+		return err
+	}
+
 	// Cut a new segment at every keyframe once we've accumulated enough duration.
 	// segStartDTS is -1 until the first keyframe; > 0 while a segment is open.
 	if pkt.IsKeyframe {
@@ -425,6 +434,9 @@ func (p *Packager) handleAudioOnlyTS(pkt *media.Packet) error {
 		p.initAudioOnlyMuxer(ci)
 	}
 
+	if err := p.tsJump(pkt.DTS); err != nil {
+		return err
+	}
 	if p.segStartDTS <= 0 {
 		p.segStartDTS = pkt.DTS
 		p.segStartWall = time.Now()
@@ -445,6 +457,49 @@ func (p *Packager) handleAudioOnlyTS(pkt *media.Packet) error {
 	defer p.mu.Unlock()
 
 	return p.segMuxer.WriteAudio(audioData, pkt.PTS)
+}
+
+// maxTSGap is the largest forward DTS step between two packets of the
+// segment-driving track that is still treated as continuous.
+const maxTSGap = 10 * 90000
+
+// tsJump handles a timestamp discontinuity in the source: DTS going
+// backwards, or forward by more than maxTSGap. Some IPTV restreamers reset
+// their timestamps mid-connection (seen on an idealtvrestream MPEG-TS pull
+// that went back to ~40 s). The keyframe cut in handleVideo measures
+// keyframe DTS - segStartDTS, which a backwards reset keeps negative, so
+// no segment was cut until the new clock caught up with the old one. The
+// playlist went stale and its segments expired, and players got 404s.
+//
+// On a jump the open segment is closed at the last continuous packet and
+// the next one starts at the next keyframe, marked #EXT-X-DISCONTINUITY so
+// players reset their timeline. TS container only: the fMP4 paths keep
+// tfdt continuity across segments and aren't covered yet.
+func (p *Packager) tsJump(dts int64) error {
+	if !p.haveLast {
+		p.lastDTS, p.haveLast = dts, true
+		return nil
+	}
+	d := dts - p.lastDTS
+	if d >= 0 && d <= maxTSGap {
+		if d > 0 {
+			p.lastDelta = d
+		}
+		p.lastDTS = dts
+		return nil
+	}
+	p.log.Info("HLS source timestamp jump, starting a discontinuity",
+		"from_dts", p.lastDTS, "to_dts", dts)
+	end := p.lastDTS + p.lastDelta
+	p.lastDTS = dts
+	if p.segStartDTS > 0 {
+		if err := p.flushSegmentAt(end); err != nil {
+			return err
+		}
+	}
+	p.segStartDTS = -1
+	p.discontNext = true
+	return nil
 }
 
 // initAudioOnlyMuxer is initMuxer's counterpart for audio-only sources —

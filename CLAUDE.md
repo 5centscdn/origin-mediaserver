@@ -227,7 +227,12 @@ make urls          # prints example ingest/playback URLs
   previous playlist (`hls.PlaylistRegistry.Previous`, kept 2 min after a
   stream stops) and marks the switch `#EXT-X-DISCONTINUITY`, so players
   following the stream ride through reconnects and pull fallback switches.
-  fMP4/CMAF and DASH still restart.
+  fMP4/CMAF and DASH still restart. A source timestamp reset within one
+  connection (DTS backwards, or forward > 10 s; some IPTV restreamers do
+  this) closes the open TS segment and starts the next at a keyframe with
+  `#EXT-X-DISCONTINUITY` (`hls.Packager.tsJump`). Without it the
+  duration-based cut never fired and the playlist went stale. fMP4/CMAF
+  and DASH don't handle this yet.
 - A wildcard stream config (`cam_%i`, `cam_*`) can cap how many matching
   streams publish at once (`stream_configs.max_streams`, schema v16, 0 =
   no limit; panel "Max publishing streams"). `db.PublishLimits` returns
