@@ -46,7 +46,12 @@ make urls          # prints example ingest/playback URLs
     Hikvision cameras send session `b=` after `t=`/`a=`, which pion
     rejects outright.
   - `pull`: managed outbound pull sources with reconnect (rtmp, rtsp,
-    mpegts_http, mpegts_udp, srt), and Nimble-style fallback URLs: on
+    mpegts_http, mpegts_udp, srt, icecast: HTTP MP3/AAC audio via
+    `icecast.Pull`, codec from Content-Type or sniffed; http(s) URLs ending
+    .mp3/.aac/.aacp default to it). A pull is registered (listed live) only
+    once it has sent media; an attempt that fails or stays silent for the
+    stall timeout is retried unlisted. RTSP keeps sessions alive with
+    GET_PARAMETER/OPTIONS at half the server's Session timeout, and Nimble-style fallback URLs: on
     failure, or no media for 10 s (an RTMP server with nothing published
     accepts the play and sends nothing), the next URL is tried at once.
     While on a fallback the primary is probed every `primary_check_s` and

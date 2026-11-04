@@ -739,6 +739,9 @@ func (s *Server) handleCreatePullSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.FallbackURLs = db.SplitFallbackURLs(db.JoinFallbackURLs(req.FallbackURLs))
+	if req.Protocol == "" {
+		req.Protocol = pull.ProtocolForURL(req.URL, "")
+	}
 	if err := pull.CheckFallbacks(req.Protocol, req.FallbackURLs); err != nil {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return

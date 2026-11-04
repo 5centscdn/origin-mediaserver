@@ -65,6 +65,7 @@ const PROTOCOL_LABEL: Record<string, string> = {
   srt: 'SRT',
   mpegts_http: 'MPEG-TS HTTP',
   mpegts_udp: 'MPEG-TS UDP',
+  icecast: 'Icecast audio',
   hls: 'HLS',
 }
 
@@ -476,11 +477,11 @@ function PullModal({
               value={form.url}
               onChange={(e) => {
                 const url = e.target.value
-                const proto = protocolForURL(url)
+                const proto = protocolForURL(url, form.protocol)
                 setForm({ ...form, url, protocol: proto ?? form.protocol })
               }}
               className={urlInputClass}
-              placeholder="rtsp://camera.example.com/stream"
+              placeholder="rtsp://camera.example.com/stream or http://radio.example.com:8000/live.mp3"
             />
           </FormField>
           <FormField
@@ -555,6 +556,7 @@ function PullModal({
                 <option value="srt">SRT</option>
                 <option value="mpegts_http">MPEG-TS over HTTP</option>
                 <option value="mpegts_udp">MPEG-TS over UDP</option>
+                <option value="icecast">Icecast / SHOUTcast audio (MP3, AAC)</option>
                 <option value="hls" disabled>
                   HLS (not supported yet)
                 </option>
@@ -648,8 +650,16 @@ function PullModal({
 
 // protocolForURL picks the protocol from a URL's scheme, matching the
 // server's pull.ProtocolForURL; undefined when the scheme doesn't decide it.
-function protocolForURL(url: string): string | undefined {
-  const scheme = url.trim().toLowerCase().split('://')[0]
+// http(s) carries both MPEG-TS and Icecast audio: a chosen one of those is
+// kept, else .mp3/.aac/.aacp means Icecast.
+function protocolForURL(url: string, current?: string): string | undefined {
+  const lower = url.trim().toLowerCase()
+  const scheme = lower.split('://')[0]
+  if (scheme === 'http' || scheme === 'https') {
+    if (/\.(mp3|aacp?)(\?|#|$)/.test(lower)) return 'icecast'
+    if (current === 'icecast' || current === 'mpegts_http') return current
+    return 'mpegts_http'
+  }
   return (
     {
       rtmp: 'rtmp',

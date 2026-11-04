@@ -118,16 +118,26 @@ func TestFallback_SwitchesAndReturnsToPrimary(t *testing.T) {
 
 func TestProtocolForURL(t *testing.T) {
 	for u, want := range map[string]string{
-		"rtmp://103.124.108.42/static/KAUMUDY": "rtmp",
-		"srt://h:9000?streamid=x":              "srt",
-		"rtsp://cam/stream":                    "rtsp",
-		"udp://0.0.0.0:5000":                   "mpegts_udp",
-		"http://h/live.ts":                     "mpegts_http",
-		"weird":                                "rtmp",
+		"rtmp://103.124.108.42/static/KAUMUDY":           "rtmp",
+		"srt://h:9000?streamid=x":                        "srt",
+		"rtsp://cam/stream":                              "rtsp",
+		"udp://0.0.0.0:5000":                             "mpegts_udp",
+		"http://h/live.ts":                               "mpegts_http",
+		"http://woct.oshkoshmedia.org/broadwavehigh.mp3": "icecast",
+		"https://h:8000/radio.AAC":                       "icecast",
+		"weird":                                          "rtmp",
 	} {
 		if got := ProtocolForURL(u, "rtmp"); got != want {
 			t.Errorf("ProtocolForURL(%q) = %q, want %q", u, got, want)
 		}
+	}
+	// An explicit choice for an http URL is kept: Icecast mounts don't
+	// always end in .mp3, and MPEG-TS URLs sometimes do odd things.
+	if got := ProtocolForURL("http://h:8000/stream", "icecast"); got != "icecast" {
+		t.Errorf("explicit icecast overridden: %q", got)
+	}
+	if got := ProtocolForURL("http://h/x.mp3", "mpegts_http"); got != "mpegts_http" {
+		t.Errorf("explicit mpegts_http overridden: %q", got)
 	}
 }
 

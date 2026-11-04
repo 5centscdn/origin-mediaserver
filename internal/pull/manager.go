@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/db"
+	"github.com/5centscdn/origin-mediaserver/internal/icecast"
 	"github.com/5centscdn/origin-mediaserver/internal/ingest/mpegts"
 	"github.com/5centscdn/origin-mediaserver/internal/ingest/rtsp"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -48,6 +49,10 @@ var supportedProtocols = map[string]func(ctx context.Context, source db.PullSour
 	},
 	"rtsp": func(ctx context.Context, source db.PullSource, bus *media.Bus) error {
 		return rtsp.Pull(ctx, source.URL, bus)
+	},
+	// Icecast/SHOUTcast or any HTTP MP3/AAC audio stream (audio only).
+	"icecast": func(ctx context.Context, source db.PullSource, bus *media.Bus) error {
+		return icecast.Pull(ctx, source.URL, bus)
 	},
 	"srt": func(ctx context.Context, source db.PullSource, bus *media.Bus) error {
 		return srt.Pull(ctx, source.URL, bus, source.Passphrase, source.PBKeylen)
@@ -110,12 +115,29 @@ func ProtocolForURL(u, def string) string {
 	case "udp":
 		return "mpegts_udp"
 	case "http", "https":
-		if def == "mpegts_http" {
+		// Both MPEG-TS and Icecast audio come over plain HTTP: keep the
+		// one chosen, else guess audio from the file extension.
+		if def == "mpegts_http" || def == "icecast" {
 			return def
+		}
+		if isAudioPath(pu.Path) {
+			return "icecast"
 		}
 		return "mpegts_http"
 	}
 	return def
+}
+
+// isAudioPath reports whether an HTTP path names an MP3/AAC audio stream
+// (Icecast mount points usually end in .mp3, .aac or .aacp).
+func isAudioPath(p string) bool {
+	p = strings.ToLower(p)
+	for _, ext := range []string{".mp3", ".aac", ".aacp"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // Manager runs and supervises pull sources.
