@@ -28,8 +28,8 @@ import {
   SearchInput,
   useToast,
 } from '@/components/ui'
-import { listStreams, kickStream, reloadStream, Stream } from '@/lib/api'
-import { formatBytes, formatUptime, formatBitrate, copyToClipboard, redactUrl } from '@/lib/utils'
+import { listStreams, kickStream, reloadStream, getNodeInfo, Stream } from '@/lib/api'
+import { formatBytes, formatUptime, formatBitrate, copyToClipboard, redactUrl, listenPort } from '@/lib/utils'
 
 type SortKey = 'name' | 'app' | 'source' | 'uptime' | 'viewers' | 'bitrate' | 'bytes' | 'codec'
 type SortState = { key: SortKey; dir: 'asc' | 'desc' }
@@ -91,6 +91,9 @@ function StreamsContent() {
   const { data, mutate, isLoading } = useSWR('streams', listStreams, {
     refreshInterval: 3000,
   })
+  // Same SWR key as the sidebar, so no extra polling: ports for the
+  // RTMP/SRT playback URLs.
+  const { data: node } = useSWR('node', getNodeInfo, { refreshInterval: 15000 })
   const toast = useToast()
   const preview = usePreview()
   const [kickTarget, setKickTarget] = useState<Stream | null>(null)
@@ -172,6 +175,12 @@ function StreamsContent() {
   // directly rather than poll an HLS/DASH playlist. Named mpeg.2ts to match
   // the real-world convention other origins (e.g. Nimble) already use.
   const tsURL = (s: Stream) => `${origin}/${s.app}/${s.name}/mpeg.2ts`
+  // RTMP and SRT playback (any live stream, whatever it was ingested over).
+  // SRT uses request mode in the standard Access Control streamid form.
+  const host = typeof window !== 'undefined' ? window.location.hostname : ''
+  const rtmpURL = (s: Stream) => `rtmp://${host}${listenPort(node?.rtmp_listen, ':1935')}/${s.app}/${s.name}`
+  const srtURL = (s: Stream) =>
+    `srt://${host}${listenPort(node?.srt?.listen, ':4000')}?streamid=#!::r=${s.app}/${s.name},m=request`
 
   const copyFromMenu = async (url: string, what: string) => {
     if (await copyToClipboard(url)) toast.success(`${what} URL copied`)
@@ -310,6 +319,10 @@ function StreamsContent() {
                           { label: 'Open HLS playlist', icon: <ExternalLink size={14} />, href: `/${s.app}/${s.name}/playlist.m3u8`, external: true },
                           { label: 'Open DASH manifest', icon: <ExternalLink size={14} />, href: `/${s.app}/${s.name}/manifest.mpd`, external: true },
                           { label: 'Copy MPEG-TS URL', icon: <Copy size={14} />, onClick: () => copyFromMenu(tsURL(s), 'MPEG-TS') },
+                          { label: 'Copy RTMP URL', icon: <Copy size={14} />, onClick: () => copyFromMenu(rtmpURL(s), 'RTMP') },
+                          ...(node?.srt?.enabled
+                            ? [{ label: 'Copy SRT URL', icon: <Copy size={14} />, onClick: () => copyFromMenu(srtURL(s), 'SRT') }]
+                            : []),
                           { label: 'Kick publisher', icon: <Power size={14} />, danger: true, separator: true, onClick: () => setKickTarget(s) },
                         ]}
                       />

@@ -284,6 +284,11 @@ func main() {
 	var srtServer *srt.Server
 	if cfg.SRT.Enabled {
 		srtServer = srt.NewServer(cfg, registry, database)
+		// SRT playback (request mode) sends SCTE-35 per the stream's mode,
+		// like raw MPEG-TS over HTTP.
+		srt.SCTE35Mode = func(ctx context.Context, app, stream string) string {
+			return streamoutputs.ResolveSCTE35Mode(ctx, database, app, stream)
+		}
 		srtServer.SetMetrics(m)
 		srtServer.OnPublish = func(stream *media.Stream) {
 			m.ActiveStreams.Set(float64(len(registry.All())))

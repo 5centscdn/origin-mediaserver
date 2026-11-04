@@ -11,6 +11,7 @@ package tsout
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -48,17 +49,22 @@ func Serve(ctx context.Context, w http.ResponseWriter, stream *media.Stream, sct
 	if !ok {
 		return fmt.Errorf("tsout: ResponseWriter does not support flushing")
 	}
-
-	sub := stream.Bus.Subscribe(ctx)
-	defer sub.Close()
-
-	scte35Enabled := scte35Mode == "passthrough" || scte35Mode == "insert" || scte35Mode == "hybrid"
-
 	w.Header().Set("Content-Type", "video/MP2T")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+	return Write(ctx, w, func() error { flusher.Flush(); return nil }, stream, scte35Mode)
+}
+
+// Write is Serve without HTTP: it writes stream's live media as continuous
+// MPEG-TS to w, calling flush after each packet's TS packets (SRT
+// playback uses it with a writer that sends whole 1316-byte datagrams).
+func Write(ctx context.Context, w io.Writer, flush func() error, stream *media.Stream, scte35Mode string) error {
+	sub := stream.Bus.Subscribe(ctx)
+	defer sub.Close()
+
+	scte35Enabled := scte35Mode == "passthrough" || scte35Mode == "insert" || scte35Mode == "hybrid"
 
 	var muxer *mux.TSMuxer
 	gotKeyframe := false // never start mid-GOP — a fresh connection must decode from frame one
@@ -142,14 +148,16 @@ func Serve(ctx context.Context, w http.ResponseWriter, stream *media.Stream, sct
 				continue
 			}
 
-			flusher.Flush()
+			if err := flush(); err != nil {
+				return fmt.Errorf("tsout: flush: %w", err)
+			}
 		}
 	}
 }
 
 // newMuxer constructs a TSMuxer for ci, writing to w — mirrors internal/
 // hls.Packager.initMuxer's stream-type/param-set selection exactly.
-func newMuxer(w http.ResponseWriter, ci *media.CodecInfo, scte35Enabled bool) *mux.TSMuxer {
+func newMuxer(w io.Writer, ci *media.CodecInfo, scte35Enabled bool) *mux.TSMuxer {
 	videoType := uint8(mux.StreamTypeH264)
 	if ci.VideoCodec == media.CodecH265 {
 		videoType = mux.StreamTypeH265

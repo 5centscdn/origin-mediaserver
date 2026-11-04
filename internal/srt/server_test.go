@@ -18,17 +18,25 @@ import (
 func TestParseStreamID(t *testing.T) {
 	cases := []struct {
 		id, wantApp, wantStream string
-		wantErr                 bool
+		wantPlay, wantErr       bool
 	}{
-		{"live/mystream", "live", "mystream", false},
-		{"/live/mystream", "live", "mystream", false},
-		{"live/mystream?secret-key", "live", "mystream?secret-key", false},
-		{"live", "", "", true},
-		{"", "", "", true},
-		{"/live", "", "", true},
+		{"live/mystream", "live", "mystream", false, false},
+		{"/live/mystream", "live", "mystream", false, false},
+		{"live/mystream?secret-key", "live", "mystream?secret-key", false, false},
+		{"play/live/mystream", "live", "mystream", true, false},
+		{"#!::r=live/mystream,m=request", "live", "mystream", true, false},
+		{"#!::m=request,r=live/mystream", "live", "mystream", true, false},
+		{"#!::r=live/mystream,m=publish", "live", "mystream", false, false},
+		{"#!::r=live/mystream", "live", "mystream", false, false},
+		{"#!::u=bob,r=live/mystream?key,m=publish", "live", "mystream?key", false, false},
+		{"#!::r=live/mystream,m=bidirectional", "", "", false, true},
+		{"#!::m=request", "", "", false, true},
+		{"live", "", "", false, true},
+		{"", "", "", false, true},
+		{"/live", "", "", false, true},
 	}
 	for _, c := range cases {
-		app, stream, err := parseStreamID(c.id)
+		app, stream, play, err := parseStreamID(c.id)
 		if c.wantErr {
 			if err == nil {
 				t.Errorf("parseStreamID(%q): expected error, got app=%q stream=%q", c.id, app, stream)
@@ -39,8 +47,8 @@ func TestParseStreamID(t *testing.T) {
 			t.Errorf("parseStreamID(%q): unexpected error: %v", c.id, err)
 			continue
 		}
-		if app != c.wantApp || stream != c.wantStream {
-			t.Errorf("parseStreamID(%q) = (%q, %q), want (%q, %q)", c.id, app, stream, c.wantApp, c.wantStream)
+		if app != c.wantApp || stream != c.wantStream || play != c.wantPlay {
+			t.Errorf("parseStreamID(%q) = (%q, %q, play=%v), want (%q, %q, play=%v)", c.id, app, stream, play, c.wantApp, c.wantStream, c.wantPlay)
 		}
 	}
 }

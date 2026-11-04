@@ -95,10 +95,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // WHIP does, and — if accepted — runs an MPEG-TS demuxer over the
 // connection until it closes.
 func (s *Server) handleConnRequest(ctx context.Context, req gosrt.ConnRequest) {
-	app, streamName, err := parseStreamID(req.StreamId())
+	app, streamName, play, err := parseStreamID(req.StreamId())
 	if err != nil {
 		slog.Warn("srt: rejecting connection with unparseable streamid", "streamid", req.StreamId(), "err", err)
 		req.Reject(gosrt.REJX_BAD_REQUEST)
+		return
+	}
+	if play {
+		s.handlePlay(ctx, req, media.StreamKey{App: app, Name: stripKeyFromName(streamName)})
 		return
 	}
 
@@ -176,17 +180,40 @@ func (s *Server) handleConnRequest(ctx context.Context, req gosrt.ConnRequest) {
 	}
 }
 
-// parseStreamID splits an SRT streamid into app/streamName, using the
-// simple "app/streamName" path convention already established by this
-// codebase's WHIP routes (/whip/{app}/{stream}) — SRT's streamid is just an
-// opaque string, so there's no protocol-mandated format to defer to.
-func parseStreamID(id string) (app, streamName string, err error) {
+// parseStreamID splits an SRT streamid into app/streamName and whether the
+// caller wants to play (request mode) rather than publish. Accepted forms:
+//
+//   - "app/stream": publish (this codebase's original convention, the same
+//     path shape as WHIP's /whip/{app}/{stream});
+//   - "play/app/stream": play;
+//   - the SRT Access Control form "#!::r=app/stream,m=request" (play) or
+//     "m=publish" (or no m: publish), which ffmpeg, OBS, vMix and Nimble
+//     use. Other keys (u=, s=, t=...) are ignored.
+func parseStreamID(id string) (app, streamName string, play bool, err error) {
+	if rest, ok := strings.CutPrefix(id, "#!::"); ok {
+		var resource, mode string
+		for _, kv := range strings.Split(rest, ",") {
+			k, v, _ := strings.Cut(kv, "=")
+			switch strings.TrimSpace(k) {
+			case "r":
+				resource = strings.TrimSpace(v)
+			case "m":
+				mode = strings.ToLower(strings.TrimSpace(v))
+			}
+		}
+		if mode != "" && mode != "request" && mode != "publish" {
+			return "", "", false, fmt.Errorf("streamid mode %q not supported (request or publish)", mode)
+		}
+		id, play = resource, mode == "request"
+	} else if rest, ok := strings.CutPrefix(strings.TrimPrefix(id, "/"), "play/"); ok {
+		id, play = rest, true
+	}
 	id = strings.TrimPrefix(id, "/")
 	app, streamName, ok := strings.Cut(id, "/")
 	if !ok || app == "" || streamName == "" {
-		return "", "", fmt.Errorf("streamid must be \"app/streamName\", got %q", id)
+		return "", "", false, fmt.Errorf("streamid must be \"app/streamName\", \"play/app/streamName\" or \"#!::r=app/streamName,m=request\", got %q", id)
 	}
-	return app, streamName, nil
+	return app, streamName, play, nil
 }
 
 // validatePublishKey and stripKeyFromName mirror internal/rtmp's

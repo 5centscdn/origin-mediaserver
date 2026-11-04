@@ -80,7 +80,20 @@ make urls          # prints example ingest/playback URLs
     v15), which overrides config.toml at startup.
   - `hls`: TS/fMP4/CMAF, LL-HLS, ad markers
   - `dash`: MPD, DVB-DASH, timeshift
-  - `tsout`: continuous HTTP MPEG-TS
+  - `tsout`: continuous MPEG-TS (`Serve` for HTTP `mpeg.2ts`, `Write` for
+    any io.Writer, used by SRT playback)
+  - RTMP playback (`rtmp/play.go`): `play` on rtmp://host/{app}/{stream}
+    streams any live stream as FLV tags from its Bus: AVC sequence header
+    from SPS/PPS, Annex-B → 4-byte AVCC, AAC (sequence header from
+    AudioSpecificConfig), MP3, G.711. Starts at a keyframe (audio-only
+    streams at the first frame); HEVC isn't sent (needs Enhanced RTMP).
+    `conn.wmu` serializes writes between player goroutines and the
+    command loop.
+  - SRT playback (`srt/play.go`): request mode, streamid
+    `#!::r=app/stream,m=request` or `play/app/stream`; continuous MPEG-TS
+    via `tsout.Write`, grouped into whole 1316-byte datagrams
+    (`datagramWriter`; gosrt sends a short packet for each Write's
+    remainder). Playback over RTMP/SRT is public, like HLS/DASH.
   - `dvr`: nDVR. Records each stream once as fMP4 (video moof+mdat then
     audio moof+mdat per file) and serves rewind from it: HLS uses the
     whole file, DASH serves each track as a byte range. URLs follow the

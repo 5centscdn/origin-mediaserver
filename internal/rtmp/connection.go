@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
@@ -35,6 +36,8 @@ type msgStreamState struct {
 	published bool
 	stream    *media.Stream
 	abrMatch  *ABRMatch    // non-nil if this variant is part of an ABR group
+
+	playCancel context.CancelFunc // non-nil while this MSID is playing (play.go)
 }
 
 // ─── Connection ───────────────────────────────────────────────────────────────
@@ -70,6 +73,13 @@ type conn struct {
 	msgStreams map[uint32]*msgStreamState
 	nextMSID  uint32
 
+	// ctx ends with the connection; playback goroutines run under it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// wmu serializes writes: playback goroutines send media while the
+	// message loop sends replies and acknowledgements.
+	wmu sync.Mutex
+
 	log *slog.Logger
 }
 
@@ -83,7 +93,10 @@ func newConn(
 ) *conn {
 	in := &countingReader{r: nc}
 	br := bufio.NewReaderSize(in, 4096)
+	ctx, cancel := context.WithCancel(context.Background())
 	return &conn{
+		ctx:           ctx,
+		cancel:        cancel,
 		nc:            nc,
 		bufReader:     br,
 		in:            in,
@@ -294,9 +307,7 @@ func (c *conn) handleAMF0Command(msg *Message) error {
 		return c.sendResult(transactionID, AMF0Null{}, AMF0Number(0))
 
 	case "play":
-		// Playback is via HLS/DASH/WHEP; we don't support RTMP play.
-		return c.sendError(transactionID, "NetStream.Play.Failed",
-			"Use HLS or DASH for playback")
+		return c.handlePlay(msg.MessageStreamID, vals)
 
 	case "onFCPublish", "onStatus", "_result", "_error":
 		// Responses to our own commands — ignore.
@@ -579,11 +590,13 @@ func (c *conn) handleDeleteStream(vals []AMF0Value) error {
 		return nil
 	}
 	msid := uint32(n)
+	c.stopPlay(c.msgStreams[msid])
 	c.unpublishMSID(msid)
 	return nil
 }
 
 func (c *conn) handleCloseStream(msid uint32) error {
+	c.stopPlay(c.msgStreams[msid])
 	c.unpublishMSID(msid)
 	return nil
 }
@@ -777,6 +790,8 @@ func (c *conn) sendAMF0Command(msid uint32, payload []byte) error {
 
 // writeChunk writes a Type-0 chunk (full header) followed by payload chunks.
 func (c *conn) writeChunk(csid, timestamp uint32, typeID uint8, msid uint32, data []byte) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	return writeChunk(c.nc, c.sendChunkSize, csid, timestamp, typeID, msid, data)
 }
 
@@ -832,8 +847,16 @@ func writeChunk(w io.Writer, chunkSize, csid, timestamp uint32, typeID uint8, ms
 
 			first = false
 		} else {
-			// Type 3 header: fmt=3, same csid — no additional header bytes
+			// Type 3 header: fmt=3, same csid. With an extended timestamp
+			// it's repeated after every Type 3 header (what librtmp and
+			// ffmpeg expect; a playback session passes 0xFFFFFF ms after
+			// 4.6 hours).
 			buf.WriteByte(byte(0xC0 | (csid & 0x3F)))
+			if timestamp >= 0xFFFFFF {
+				var ext [4]byte
+				binary.BigEndian.PutUint32(ext[:], timestamp)
+				buf.Write(ext[:])
+			}
 		}
 
 		buf.Write(payload)
@@ -847,6 +870,7 @@ func writeChunk(w io.Writer, chunkSize, csid, timestamp uint32, typeID uint8, ms
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
 func (c *conn) cleanup() {
+	c.cancel() // stops playback goroutines
 	c.nc.Close()
 
 	// Unpublish all streams on this connection.
