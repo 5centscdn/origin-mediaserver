@@ -514,3 +514,69 @@ func TestDemuxer_PMTDetectsSCTE35PID(t *testing.T) {
 		t.Errorf("scte35PID = 0x%04X, want 0x%04X", d.scte35PID, mux.PIDSCTE35)
 	}
 }
+
+// TestDemuxer_SlicesSplitAcrossPESBecomeOneAccessUnit reproduces a live
+// IPTV source: a 1080p IDR is too big for one length-capped PES (64 KB), so
+// the encoder sends its 4 slices in 4 PES packets with the same PTS/DTS.
+// Each picture must still reach the bus as one Packet with all its slices;
+// one Packet per slice gave the HLS packager four "keyframes" with the same
+// timestamp and browsers couldn't play the stream.
+func TestDemuxer_SlicesSplitAcrossPESBecomeOneAccessUnit(t *testing.T) {
+	sps := decodeFixture(t, fixtureSPS)
+	pps := decodeFixture(t, fixturePPS)
+	// Slice NALs whose header starts with first_mb_in_slice = 0, 1, 2, 3
+	// (ue(v): 1, 010, 011, 00100), then filler.
+	idrSlice := func(firstByte byte) []byte { return []byte{0x65, firstByte, 0xAA, 0xBB, 0xCC} }
+	pSlice := func(firstByte byte) []byte { return []byte{0x41, firstByte, 0xAA, 0xBB, 0xCC} }
+	idr := [][]byte{idrSlice(0xC0), idrSlice(0x50), idrSlice(0x70), idrSlice(0x24)}
+
+	var ts bytes.Buffer
+	m := mux.NewTSMuxer(&ts, mux.StreamTypeH264, mux.StreamTypeAAC)
+	m.SetSPSPPS(sps, pps)
+	for _, s := range idr { // one PES per slice, same timestamps
+		if err := m.WriteVideo(withStartCode(s), 9000, 12600, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A P picture with both its slices in one PES.
+	p := append(withStartCode(pSlice(0xC0)), withStartCode(pSlice(0x50))...)
+	if err := m.WriteVideo(p, 12600, 16200, false); err != nil {
+		t.Fatal(err)
+	}
+	// Next picture starts: completes the P picture.
+	if err := m.WriteVideo(withStartCode(pSlice(0xC0)), 16200, 19800, false); err != nil {
+		t.Fatal(err)
+	}
+
+	bus := media.NewBus()
+	sub := bus.Subscribe(context.Background())
+	defer sub.Close()
+	d := NewDemuxer(bus)
+	d.feedPackets(ts.Bytes())
+	d.Flush()
+
+	var video []*media.Packet
+	for {
+		select {
+		case pkt := <-sub.Chan():
+			if pkt.Codec == media.CodecH264 {
+				video = append(video, pkt)
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if len(video) != 3 {
+		t.Fatalf("got %d video packets, want 3 pictures", len(video))
+	}
+	if !video[0].IsKeyframe || video[0].DTS != 9000 || video[0].PTS != 12600 {
+		t.Errorf("IDR packet: key=%v dts=%d pts=%d", video[0].IsKeyframe, video[0].DTS, video[0].PTS)
+	}
+	if n := bytes.Count(video[0].Data, []byte{0, 0, 0, 1, 0x65}); n != 4 {
+		t.Errorf("IDR packet holds %d slices, want 4", n)
+	}
+	if n := bytes.Count(video[1].Data, []byte{0, 0, 0, 1, 0x41}); n != 2 || video[1].IsKeyframe {
+		t.Errorf("P packet holds %d slices (key=%v), want 2", n, video[1].IsKeyframe)
+	}
+}

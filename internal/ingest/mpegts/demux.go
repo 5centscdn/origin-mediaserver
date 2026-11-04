@@ -86,6 +86,16 @@ type Demuxer struct {
 	// DTS is.
 	sawVideoDTS bool
 
+	// au is the video access unit being assembled: every slice of one
+	// picture goes into one Packet. Encoders cap a video PES at 64 KB when
+	// they give it a length, so a large picture (a 1080p IDR is easily
+	// 200 KB) arrives as several PES packets, each a slice or two with the
+	// same PTS. Published one Packet per slice, downstream sees several
+	// "keyframes" with one timestamp (the HLS packager even prefixes each
+	// with SPS/PPS) and players stall. A picture is complete when the next
+	// one starts (first_mb_in_slice == 0), so it's held one frame.
+	au *pendingAU
+
 	// OnSCTE35Error, if set, is called (synchronously, on the demux
 	// goroutine) whenever a section on the detected SCTE-35 PID fails to
 	// parse — wiring this to a metrics counter is the caller's choice,
@@ -100,6 +110,13 @@ type Demuxer struct {
 	// BytesIn) has nowhere else to be updated from, since Demuxer only holds
 	// a *media.Bus, not a *media.Stream. nil is a safe no-op.
 	OnBytes func(n int)
+}
+
+// pendingAU is an access unit being assembled from slices; nal is its first
+// slice (no start code), which the retimer reads the POC from.
+type pendingAU struct {
+	pkt *media.Packet
+	nal []byte
 }
 
 // NewDemuxer creates a demuxer that publishes onto bus.
@@ -387,6 +404,7 @@ func (d *Demuxer) flushVideo(data []byte) {
 	} else if d.retimer != nil {
 		// The source sends DTS after all: release what's buffered and
 		// pass timestamps through from here on.
+		d.emitAU()
 		d.publishVideo(d.retimer.Flush())
 		d.retimer = nil
 	}
@@ -440,6 +458,13 @@ func (d *Demuxer) flushVideo(data []byte) {
 				sliceData = append(pendingSEI, sliceData...)
 				pendingSEI = nil
 			}
+			// A continuation slice joins the picture being assembled, even
+			// when it came in a later PES packet.
+			if mb, ok := media.H264FirstMBInSlice(nal); ok && mb > 0 && d.au != nil {
+				d.au.pkt.Data = append(d.au.pkt.Data, sliceData...)
+				continue
+			}
+			d.emitAU()
 			pkt := &media.Packet{
 				Type:       pktType,
 				Codec:      media.CodecH264,
@@ -449,12 +474,23 @@ func (d *Demuxer) flushVideo(data []byte) {
 				Data:       sliceData,
 				WallClock:  time.Now(),
 			}
-			if d.retimer != nil {
-				d.publishVideo(d.retimer.Push(pkt, nal))
-			} else {
-				d.bus.Publish(pkt)
-			}
+			d.au = &pendingAU{pkt: pkt, nal: nal}
 		}
+	}
+}
+
+// emitAU publishes the assembled access unit, through the retimer when
+// it's active.
+func (d *Demuxer) emitAU() {
+	if d.au == nil {
+		return
+	}
+	au := d.au
+	d.au = nil
+	if d.retimer != nil {
+		d.publishVideo(d.retimer.Push(au.pkt, au.nal))
+	} else {
+		d.bus.Publish(au.pkt)
 	}
 }
 
@@ -625,6 +661,7 @@ func (d *Demuxer) Flush() {
 		d.flushVideo(buf)
 		delete(d.pesBuf, d.videoPID)
 	}
+	d.emitAU()
 	if d.retimer != nil {
 		d.publishVideo(d.retimer.Flush())
 	}

@@ -317,3 +317,20 @@ func (d *pocDecoder) decode(h h264Slice) int {
 	}
 	return poc
 }
+
+// H264FirstMBInSlice returns a slice NAL's first_mb_in_slice (nal without
+// start code). 0 starts a new picture; anything else continues the picture
+// of the slice before it. ok is false for a NAL too short to tell.
+func H264FirstMBInSlice(nal []byte) (int, bool) {
+	if len(nal) < 2 {
+		return 0, false
+	}
+	head := nal
+	if len(head) > 16 {
+		head = head[:16]
+	}
+	br := newBitReader(unescapeRBSP(head))
+	br.readBits(8)
+	mb := br.readUE()
+	return mb, !br.err
+}
