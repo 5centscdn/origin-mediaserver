@@ -137,6 +137,12 @@ func (s *Server) handleConnRequest(ctx context.Context, req gosrt.ConnRequest) {
 		req.Reject(gosrt.REJX_CONFLICT)
 		return
 	}
+	limits, _ := s.db.PublishLimits(ctx, appCfg.ID, streamName)
+	if le := s.registry.LimitReached(app, streamName, limits); le != nil {
+		slog.Warn("srt: rejecting connection, publish limit reached", "stream", key, "pattern", le.Pattern, "max", le.Max)
+		req.Reject(gosrt.REJX_OVERLOAD)
+		return
+	}
 
 	conn, err := req.Accept()
 	if err != nil {
@@ -151,7 +157,7 @@ func (s *Server) handleConnRequest(ctx context.Context, req gosrt.ConnRequest) {
 		SourceAddr: conn.RemoteAddr().String(),
 		StartedAt:  time.Now(),
 	}
-	if err := s.registry.Register(stream); err != nil {
+	if err := s.registry.RegisterLimited(stream, limits); err != nil {
 		slog.Warn("srt: register failed", "stream", key, "err", err)
 		return
 	}

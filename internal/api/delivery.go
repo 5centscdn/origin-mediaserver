@@ -397,6 +397,12 @@ func (s *Server) handleWHIP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Publish limit of a wildcard stream config. Checked before
+	// negotiation; two WHIP offers racing for the last slot can both pass.
+	if limits, _ := s.db.PublishLimits(r.Context(), appCfg.ID, streamName); s.registry.LimitReached(app, streamName, limits) != nil {
+		http.Error(w, "too many streams publishing for this stream pattern", http.StatusForbidden)
+		return
+	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

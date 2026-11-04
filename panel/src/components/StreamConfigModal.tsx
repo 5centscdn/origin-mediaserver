@@ -37,6 +37,7 @@ const defaultStreamForm = {
   dvr_window_s: 0,
   abr_group_id: '',
   enabled: true,
+  max_streams: 0,
 }
 
 /**
@@ -92,12 +93,17 @@ export function StreamConfigModal({
         dvr_window_s: edit.dvr_window_s ?? 0,
         abr_group_id: edit.abr_group_id ?? '',
         enabled: edit.enabled,
+        max_streams: edit.max_streams ?? 0,
       })
     } else {
       setForm(defaultStreamForm)
     }
     setErr(null)
   })
+
+  // A publish limit only means something for a pattern (cam_%i, cam_*).
+  const isPattern = (n: string) => n.includes('*') || n.includes('%i')
+  const showLimit = names.length <= 1 ? form.is_wildcard : names.some(isPattern)
 
   // Auto-detect wildcard when pattern changes
   const onPatternChange = (pattern: string) => {
@@ -267,6 +273,28 @@ export function StreamConfigModal({
               label="Is Wildcard"
               description="Auto-detected from a pattern containing * or %i."
             />
+          )}
+
+          {showLimit && (
+            <FormField
+              label="Max publishing streams"
+              hint={
+                <>
+                  How many streams matching this pattern can publish at the same time. Further publishes are refused
+                  (e.g. <code className="font-mono">cam_%i</code> with 3 takes cam_1, cam_2, cam_3 and refuses a 4th
+                  rendition). 0 = no limit.
+                </>
+              }
+            >
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={form.max_streams}
+                onChange={(e) => setForm({ ...form, max_streams: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                className={inputClass + ' sm:max-w-[12rem]'}
+              />
+            </FormField>
           )}
 
           <Toggle

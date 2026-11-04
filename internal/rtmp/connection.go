@@ -563,7 +563,20 @@ func (c *conn) handlePublish(msid uint32, vals []AMF0Value) error {
 		stream.ABRHeightHint = match.Height
 	}
 
-	if err := c.registry.Register(stream); err != nil {
+	// Wildcard stream configs can cap concurrent publishes ("cam_%i", at
+	// most 3): an encoder sending a 4th rendition gets BadName for it.
+	var limits []media.PublishLimit
+	if c.dbApp != nil {
+		limits, _ = c.db.PublishLimits(context.Background(), c.dbApp.ID, streamName)
+	}
+	if err := c.registry.RegisterLimited(stream, limits); err != nil {
+		var le *media.PublishLimitError
+		if errors.As(err, &le) {
+			_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName",
+				fmt.Sprintf("Too many streams: at most %d matching %s", le.Max, le.Pattern))
+			c.log.Warn("publish refused: limit reached", "stream", streamName, "pattern", le.Pattern, "max", le.Max)
+			return nil
+		}
 		return err
 	}
 

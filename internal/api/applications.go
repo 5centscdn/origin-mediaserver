@@ -307,7 +307,7 @@ func (s *Server) handleListStreamConfigs(w http.ResponseWriter, r *http.Request)
 		       out_hls, out_dash, out_mpegts, out_ll_hls,
 		       dvb_dash_enabled, dvb_subtitles_enabled,
 		       dvr_enabled, dvr_window_s, COALESCE(abr_group_id,''), enabled,
-		       scte35_passthrough, ad_marker_format, scte35_mode, created_at
+		       scte35_passthrough, ad_marker_format, scte35_mode, max_streams, created_at
 		FROM stream_configs WHERE app_id = ? ORDER BY name_pattern`, appID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -318,12 +318,12 @@ func (s *Server) handleListStreamConfigs(w http.ResponseWriter, r *http.Request)
 	var list []map[string]interface{}
 	for rows.Next() {
 		var id, appIDVal, pattern, abrGroup, adMarkerFormat, scte35Mode, createdAt string
-		var isWild, outHLS, outDASH, outMpegTS, outLLHLS, dvbDash, dvbSubs, dvrEnabled, dvrWin, enabled, scte35Passthrough int
+		var isWild, outHLS, outDASH, outMpegTS, outLLHLS, dvbDash, dvbSubs, dvrEnabled, dvrWin, enabled, scte35Passthrough, maxStreams int
 		if err := rows.Scan(&id, &appIDVal, &pattern, &isWild,
 			&outHLS, &outDASH, &outMpegTS, &outLLHLS,
 			&dvbDash, &dvbSubs,
 			&dvrEnabled, &dvrWin, &abrGroup, &enabled,
-			&scte35Passthrough, &adMarkerFormat, &scte35Mode, &createdAt); err != nil {
+			&scte35Passthrough, &adMarkerFormat, &scte35Mode, &maxStreams, &createdAt); err != nil {
 			continue
 		}
 		list = append(list, map[string]interface{}{
@@ -335,7 +335,7 @@ func (s *Server) handleListStreamConfigs(w http.ResponseWriter, r *http.Request)
 			"dvr_enabled": dvrEnabled, "dvr_window_s": dvrWin,
 			"abr_group_id": abrGroup, "enabled": enabled == 1,
 			"scte35_passthrough": scte35Passthrough, "ad_marker_format": adMarkerFormat,
-			"scte35_mode": scte35Mode,
+			"scte35_mode": scte35Mode, "max_streams": maxStreams,
 			"created_at":  createdAt,
 		})
 	}
@@ -365,6 +365,10 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 		SCTE35Passthrough *int   `json:"scte35_passthrough"`
 		AdMarkerFormat    string `json:"ad_marker_format"`
 		SCTE35Mode        string `json:"scte35_mode"`
+
+		// MaxStreams caps concurrent publishes matching a wildcard
+		// pattern (0 = no limit). Ignored for exact names.
+		MaxStreams int `json:"max_streams"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
@@ -372,6 +376,10 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 	}
 	if req.NamePattern == "" {
 		jsonError(w, http.StatusBadRequest, "name_pattern is required")
+		return
+	}
+	if req.MaxStreams < 0 {
+		jsonError(w, http.StatusBadRequest, "max_streams must be 0 (no limit) or more")
 		return
 	}
 
@@ -396,6 +404,10 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 	dvbSubs := intPtrVal(req.DVBSubtitlesEnabled, -1)
 	dvrEnabled := intPtrVal(req.DVREnabled, -1)
 	scte35Passthrough := intPtrVal(req.SCTE35Passthrough, -1)
+	maxStreams := req.MaxStreams
+	if isWild == 0 {
+		maxStreams = 0
+	}
 
 	var abrGroupID interface{} = nil
 	if req.ABRGroupID != "" {
@@ -409,13 +421,13 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 		   out_hls, out_dash, out_mpegts, out_ll_hls,
 		   dvb_dash_enabled, dvb_subtitles_enabled,
 		   dvr_enabled, dvr_window_s, abr_group_id, enabled,
-		   scte35_passthrough, ad_marker_format, scte35_mode)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   scte35_passthrough, ad_marker_format, scte35_mode, max_streams)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, appID, req.NamePattern, isWild,
 		outHLS, outDASH, outMpegTS, outLLHLS,
 		dvbDash, dvbSubs,
 		dvrEnabled, req.DVRWindowS, abrGroupID, enabled,
-		scte35Passthrough, req.AdMarkerFormat, req.SCTE35Mode,
+		scte35Passthrough, req.AdMarkerFormat, req.SCTE35Mode, maxStreams,
 	)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -435,7 +447,7 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 		"dvr_enabled": dvrEnabled, "dvr_window_s": req.DVRWindowS,
 		"abr_group_id": req.ABRGroupID, "enabled": enabled == 1,
 		"scte35_passthrough": scte35Passthrough, "ad_marker_format": req.AdMarkerFormat,
-		"scte35_mode": req.SCTE35Mode,
+		"scte35_mode": req.SCTE35Mode, "max_streams": maxStreams,
 		"created_at":  createdAt,
 	})
 	w.Header().Set("Content-Type", "application/json")
@@ -463,6 +475,10 @@ func (s *Server) handleUpdateStreamConfig(w http.ResponseWriter, r *http.Request
 		SCTE35Passthrough *int   `json:"scte35_passthrough"`
 		AdMarkerFormat    string `json:"ad_marker_format"`
 		SCTE35Mode        string `json:"scte35_mode"`
+
+		// MaxStreams caps concurrent publishes matching a wildcard
+		// pattern (0 = no limit). Ignored for exact names.
+		MaxStreams int `json:"max_streams"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
@@ -470,6 +486,10 @@ func (s *Server) handleUpdateStreamConfig(w http.ResponseWriter, r *http.Request
 	}
 	if req.NamePattern == "" {
 		jsonError(w, http.StatusBadRequest, "name_pattern is required")
+		return
+	}
+	if req.MaxStreams < 0 {
+		jsonError(w, http.StatusBadRequest, "max_streams must be 0 (no limit) or more")
 		return
 	}
 
@@ -483,6 +503,10 @@ func (s *Server) handleUpdateStreamConfig(w http.ResponseWriter, r *http.Request
 	dvbSubs := intPtrVal(req.DVBSubtitlesEnabled, -1)
 	dvrEnabled := intPtrVal(req.DVREnabled, -1)
 	scte35Passthrough := intPtrVal(req.SCTE35Passthrough, -1)
+	maxStreams := req.MaxStreams
+	if isWild == 0 {
+		maxStreams = 0
+	}
 
 	var abrGroupID interface{} = nil
 	if req.ABRGroupID != "" {
@@ -495,13 +519,13 @@ func (s *Server) handleUpdateStreamConfig(w http.ResponseWriter, r *http.Request
 		  out_hls=?, out_dash=?, out_mpegts=?, out_ll_hls=?,
 		  dvb_dash_enabled=?, dvb_subtitles_enabled=?,
 		  dvr_enabled=?, dvr_window_s=?, abr_group_id=?, enabled=?,
-		  scte35_passthrough=?, ad_marker_format=?, scte35_mode=?
+		  scte35_passthrough=?, ad_marker_format=?, scte35_mode=?, max_streams=?
 		WHERE id=? AND app_id=?`,
 		req.NamePattern, isWild,
 		outHLS, outDASH, outMpegTS, outLLHLS,
 		dvbDash, dvbSubs,
 		dvrEnabled, req.DVRWindowS, abrGroupID, enabled,
-		scte35Passthrough, req.AdMarkerFormat, req.SCTE35Mode,
+		scte35Passthrough, req.AdMarkerFormat, req.SCTE35Mode, maxStreams,
 		sid, appID,
 	)
 	if err != nil {

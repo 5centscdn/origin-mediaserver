@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/5centscdn/origin-mediaserver/internal/media"
 )
 
 // AppConfig is the runtime view of an applications row.
@@ -162,6 +164,32 @@ func (db *DB) GetABRPatternConfig(ctx context.Context, appID, streamName string)
 		}
 	}
 	return nil, rows.Err()
+}
+
+// PublishLimits returns the publish limits that apply to streamName in
+// app: every enabled wildcard stream config with max_streams set whose
+// pattern matches it. All of them apply, not just the config that wins in
+// GetStreamConfig, so an exact "test1" config doesn't escape the limit on
+// "test%i".
+func (db *DB) PublishLimits(ctx context.Context, appID, streamName string) ([]media.PublishLimit, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT name_pattern, max_streams FROM stream_configs
+		WHERE app_id = ? AND enabled = 1 AND is_wildcard = 1 AND max_streams > 0`, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []media.PublishLimit
+	for rows.Next() {
+		var pattern string
+		var max int
+		if rows.Scan(&pattern, &max) != nil || !matchStreamPattern(pattern, streamName) {
+			continue
+		}
+		out = append(out, media.PublishLimit{Pattern: pattern, Max: max,
+			Match: func(name string) bool { return matchStreamPattern(pattern, name) }})
+	}
+	return out, rows.Err()
 }
 
 // MatchStreamPattern reports whether name matches a stream config pattern

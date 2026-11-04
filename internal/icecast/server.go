@@ -136,6 +136,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		writeResponse(conn, 409, "Conflict")
 		return
 	}
+	limits, _ := s.db.PublishLimits(ctx, appCfg.ID, streamName)
+	if le := s.registry.LimitReached(app, streamName, limits); le != nil {
+		slog.Warn("icecast: rejecting connection, publish limit reached", "stream", key, "pattern", le.Pattern, "max", le.Max)
+		writeResponse(conn, 403, "Forbidden")
+		return
+	}
 
 	// Handshake accepted. A PUT request may have sent Expect: 100-continue
 	// before its body; Icecast2's native SOURCE method never does. Either
@@ -154,7 +160,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		SourceAddr: conn.RemoteAddr().String(),
 		StartedAt:  time.Now(),
 	}
-	if err := s.registry.Register(stream); err != nil {
+	if err := s.registry.RegisterLimited(stream, limits); err != nil {
 		slog.Warn("icecast: register failed", "stream", key, "err", err)
 		return
 	}

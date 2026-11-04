@@ -141,7 +141,10 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(s *Stream) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.registerLocked(s)
+}
 
+func (r *Registry) registerLocked(s *Stream) error {
 	if _, exists := r.streams[s.Key]; exists {
 		return fmt.Errorf("stream %s is already publishing", s.Key)
 	}
@@ -268,4 +271,63 @@ func (r *Registry) AllABRGroups() []string {
 		names = append(names, gk.String())
 	}
 	return names
+}
+
+// PublishLimit caps how many streams matching a stream config pattern
+// (e.g. FMLE's "cam_%i") may publish at once in one app. Match reports
+// whether a stream name falls under Pattern.
+type PublishLimit struct {
+	Pattern string
+	Max     int
+	Match   func(name string) bool
+}
+
+// PublishLimitError is returned by RegisterLimited when a limit is full.
+type PublishLimitError struct {
+	Pattern string
+	Max     int
+}
+
+func (e *PublishLimitError) Error() string {
+	return fmt.Sprintf("publish limit reached: at most %d streams matching %q", e.Max, e.Pattern)
+}
+
+// LimitReached returns the first of limits that a new publish of name in
+// app would exceed, or nil. It's a pre-check for ingest that must answer
+// before it can build the Stream (SRT rejects at the handshake);
+// RegisterLimited is the authoritative check.
+func (r *Registry) LimitReached(app, name string, limits []PublishLimit) *PublishLimitError {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.limitReachedLocked(StreamKey{App: app, Name: name}, limits)
+}
+
+func (r *Registry) limitReachedLocked(key StreamKey, limits []PublishLimit) *PublishLimitError {
+	for _, l := range limits {
+		if l.Max <= 0 || l.Match == nil || !l.Match(key.Name) {
+			continue
+		}
+		n := 0
+		for k := range r.streams {
+			if k.App == key.App && k != key && l.Match(k.Name) {
+				n++
+			}
+		}
+		if n >= l.Max {
+			return &PublishLimitError{Pattern: l.Pattern, Max: l.Max}
+		}
+	}
+	return nil
+}
+
+// RegisterLimited is Register, refused with a *PublishLimitError when the
+// stream would exceed one of limits. Counting and registering happen under
+// one lock, so two encoders racing for the last slot can't both get it.
+func (r *Registry) RegisterLimited(s *Stream, limits []PublishLimit) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.limitReachedLocked(s.Key, limits); err != nil {
+		return err
+	}
+	return r.registerLocked(s)
 }

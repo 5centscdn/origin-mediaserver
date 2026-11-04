@@ -102,6 +102,7 @@ var migrations = []migration{
 	{13, schemav13},
 	{14, schemav14},
 	{15, schemav15},
+	{16, schemav16},
 }
 
 // ─── Schema v1: core tables ───────────────────────────────────────────────────
@@ -484,4 +485,11 @@ CREATE TABLE IF NOT EXISTS settings (
 const schemav14 = `
 ALTER TABLE pull_sources ADD COLUMN fallback_urls   TEXT NOT NULL DEFAULT '';
 ALTER TABLE pull_sources ADD COLUMN primary_check_s INTEGER NOT NULL DEFAULT 30;
+`
+
+// schemav16: max_streams caps how many streams matching a wildcard stream
+// config (e.g. FMLE's "cam_%i") may publish at once; 0 = no limit. See
+// DB.PublishLimits and media.Registry.RegisterLimited.
+const schemav16 = `
+ALTER TABLE stream_configs ADD COLUMN max_streams INTEGER NOT NULL DEFAULT 0;
 `

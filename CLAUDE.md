@@ -225,6 +225,15 @@ make urls          # prints example ingest/playback URLs
   stream stops) and marks the switch `#EXT-X-DISCONTINUITY`, so players
   following the stream ride through reconnects and pull fallback switches.
   fMP4/CMAF and DASH still restart.
+- A wildcard stream config (`cam_%i`, `cam_*`) can cap how many matching
+  streams publish at once (`stream_configs.max_streams`, schema v16, 0 =
+  no limit; panel "Max publishing streams"). `db.PublishLimits` returns
+  every limited pattern a name matches (an exact `test1` config doesn't
+  escape `test%i`'s limit), and `media.Registry.RegisterLimited` counts
+  and registers under one lock. RTMP refuses the extra publish with
+  BadName but keeps the connection (FMLE's other renditions stay up);
+  SRT rejects with REJX_OVERLOAD, Icecast and WHIP with 403 (WHIP only
+  pre-checks, so racing offers can overshoot).
 - Auth is per application. RTMP puts the key in the stream name, SRT uses
   `app/stream?key`, WHIP uses `Authorization: Bearer <publish_key>`, and
   Icecast uses the Basic auth password. RTMP also supports Adobe auth

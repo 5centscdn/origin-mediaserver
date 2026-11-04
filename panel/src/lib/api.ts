@@ -653,6 +653,7 @@ export interface StreamConfig {
   created_at: string
   scte35_mode: string      // '' = inherit from app; else disabled|passthrough|insert|hybrid
   ad_marker_format: string // '' = inherit from app
+  max_streams: number      // wildcard only: concurrent publishes allowed; 0 = no limit
 }
 
 export async function listApplications(): Promise<Application[]> {

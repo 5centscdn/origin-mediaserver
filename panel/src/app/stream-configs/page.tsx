@@ -275,13 +275,21 @@ function StreamConfigsContent() {
                         {!r.cfg.enabled ? (
                           <StatusBadge status="disabled" />
                         ) : l.length > 0 ? (
-                          <StatusBadge status="live" label={`Live${r.cfg.is_wildcard ? ` · ${l.length}` : ''}`} />
+                          <StatusBadge
+                            status="live"
+                            label={`Live${r.cfg.is_wildcard ? ` · ${l.length}${r.cfg.max_streams ? `/${r.cfg.max_streams}` : ''}` : ''}`}
+                          />
                         ) : (
                           <StatusBadge status="idle" />
                         )}
                         {r.cfg.is_wildcard && (
                           <Badge variant="purple" title="Pattern: matches any stream name that fits">
                             pattern
+                          </Badge>
+                        )}
+                        {r.cfg.is_wildcard && r.cfg.max_streams > 0 && l.length === 0 && (
+                          <Badge variant="gray" title="At most this many matching streams can publish at once">
+                            max {r.cfg.max_streams}
                           </Badge>
                         )}
                       </div>
