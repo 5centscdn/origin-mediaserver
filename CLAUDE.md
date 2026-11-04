@@ -46,7 +46,10 @@ make urls          # prints example ingest/playback URLs
     Hikvision cameras send session `b=` after `t=`/`a=`, which pion
     rejects outright.
   - `pull`: managed outbound pull sources with reconnect (rtmp, rtsp,
-    mpegts_http, mpegts_udp, srt, icecast: HTTP MP3/AAC audio via
+    mpegts_http, mpegts_udp, srt, hls: live HLS with MPEG-TS segments via
+    `ingest/hlspull`, highest-bandwidth variant, segments fed in order
+    into one MPEG-TS demuxer (no fMP4, AES or byte ranges; http(s) URLs
+    ending .m3u8 default to it), icecast: HTTP MP3/AAC audio via
     `icecast.Pull`, codec from Content-Type or sniffed; http(s) URLs ending
     .mp3/.aac/.aacp default to it). A pull is registered (listed live) only
     once it has sent media; an attempt that fails or stays silent for the

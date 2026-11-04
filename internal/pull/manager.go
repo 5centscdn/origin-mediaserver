@@ -25,6 +25,7 @@ import (
 
 	"github.com/5centscdn/origin-mediaserver/internal/db"
 	"github.com/5centscdn/origin-mediaserver/internal/icecast"
+	"github.com/5centscdn/origin-mediaserver/internal/ingest/hlspull"
 	"github.com/5centscdn/origin-mediaserver/internal/ingest/mpegts"
 	"github.com/5centscdn/origin-mediaserver/internal/ingest/rtsp"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -53,6 +54,10 @@ var supportedProtocols = map[string]func(ctx context.Context, source db.PullSour
 	// Icecast/SHOUTcast or any HTTP MP3/AAC audio stream (audio only).
 	"icecast": func(ctx context.Context, source db.PullSource, bus *media.Bus) error {
 		return icecast.Pull(ctx, source.URL, bus)
+	},
+	// Live HLS with MPEG-TS segments (internal/ingest/hlspull).
+	"hls": func(ctx context.Context, source db.PullSource, bus *media.Bus) error {
+		return hlspull.Pull(ctx, source.URL, bus)
 	},
 	"srt": func(ctx context.Context, source db.PullSource, bus *media.Bus) error {
 		return srt.Pull(ctx, source.URL, bus, source.Passphrase, source.PBKeylen)
@@ -117,7 +122,10 @@ func ProtocolForURL(u, def string) string {
 	case "http", "https":
 		// Both MPEG-TS and Icecast audio come over plain HTTP: keep the
 		// one chosen, else guess audio from the file extension.
-		if def == "mpegts_http" || def == "icecast" {
+		if strings.HasSuffix(strings.ToLower(pu.Path), ".m3u8") {
+			return "hls"
+		}
+		if def == "mpegts_http" || def == "icecast" || def == "hls" {
 			return def
 		}
 		if isAudioPath(pu.Path) {

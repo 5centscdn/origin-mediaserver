@@ -557,9 +557,7 @@ function PullModal({
                 <option value="mpegts_http">MPEG-TS over HTTP</option>
                 <option value="mpegts_udp">MPEG-TS over UDP</option>
                 <option value="icecast">Icecast / SHOUTcast audio (MP3, AAC)</option>
-                <option value="hls" disabled>
-                  HLS (not supported yet)
-                </option>
+                <option value="hls">HLS (.m3u8, MPEG-TS segments)</option>
               </select>
             </FormField>
             <FormField label="Reconnect delay (s)">
@@ -650,14 +648,15 @@ function PullModal({
 
 // protocolForURL picks the protocol from a URL's scheme, matching the
 // server's pull.ProtocolForURL; undefined when the scheme doesn't decide it.
-// http(s) carries both MPEG-TS and Icecast audio: a chosen one of those is
-// kept, else .mp3/.aac/.aacp means Icecast.
+// http(s) carries HLS, MPEG-TS and Icecast audio: .m3u8 means HLS; a chosen
+// one of the others is kept, else .mp3/.aac/.aacp means Icecast.
 function protocolForURL(url: string, current?: string): string | undefined {
   const lower = url.trim().toLowerCase()
   const scheme = lower.split('://')[0]
   if (scheme === 'http' || scheme === 'https') {
+    if (/\.m3u8(\?|#|$)/.test(lower)) return 'hls'
     if (/\.(mp3|aacp?)(\?|#|$)/.test(lower)) return 'icecast'
-    if (current === 'icecast' || current === 'mpegts_http') return current
+    if (current === 'icecast' || current === 'mpegts_http' || current === 'hls') return current
     return 'mpegts_http'
   }
   return (

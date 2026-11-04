@@ -125,6 +125,7 @@ func TestProtocolForURL(t *testing.T) {
 		"http://h/live.ts":                               "mpegts_http",
 		"http://woct.oshkoshmedia.org/broadwavehigh.mp3": "icecast",
 		"https://h:8000/radio.AAC":                       "icecast",
+		"https://h/alba/live1/playlist.m3u8?token=1":     "hls",
 		"weird":                                          "rtmp",
 	} {
 		if got := ProtocolForURL(u, "rtmp"); got != want {
