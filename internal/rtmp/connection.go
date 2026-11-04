@@ -66,6 +66,10 @@ type conn struct {
 	// RTMP negotiation state
 	appName       string
 	sendChunkSize uint32
+	// playOnly is why this connection may play but not publish ("" = it
+	// may publish): its app isn't a publish application, or it skipped
+	// the app's push login as a player (see handleConnect).
+	playOnly string
 
 	// Per-message-stream states (MSID → state).
 	// KEY DESIGN: this map is what makes FMLE %i work.
@@ -354,14 +358,31 @@ func (c *conn) handleConnect(txID float64, vals []AMF0Value) error {
 		c.app = appCfg
 		appFound = true
 	}
+	// Playback works for any live stream, including ones that only exist
+	// as pull sources (no publish application), so an unknown app is let
+	// in for playing only; publish on it is refused in handlePublish.
 	if !appFound {
-		return fmt.Errorf("connect: unknown app %q", appName)
+		c.playOnly = "unknown app"
 	}
 
 	c.appName = appName
 	c.log = c.log.With("app", appName)
 
-	if login, password := c.pushCredentials(); login != "" {
+	if login, _ := c.pushCredentials(); login != "" && c.playOnly == "" {
+		params := adobeAuthParams(string(rawApp))
+		if params == nil {
+			params = adobeAuthParams(string(tcURL))
+		}
+		// The push login challenge comes at connect, before the client
+		// says whether it'll play or publish. Encoders say so up front:
+		// FMLE, OBS, ffmpeg and librtmp all send type "nonprivate" and/or
+		// an FMLE flashVer. A connect with neither and no auth parameters
+		// is a player; it skips the challenge and can't publish.
+		if params == nil && !looksLikeEncoder(info) {
+			c.playOnly = "push login required"
+		}
+	}
+	if login, password := c.pushCredentials(); login != "" && c.playOnly == "" {
 		params := adobeAuthParams(string(rawApp))
 		if params == nil {
 			params = adobeAuthParams(string(tcURL))
@@ -441,6 +462,9 @@ func (c *conn) handleCreateStream(txID float64) error {
 func (c *conn) handlePublish(msid uint32, vals []AMF0Value) error {
 	if c.appName == "" {
 		return fmt.Errorf("publish before connect")
+	}
+	if c.playOnly != "" {
+		return fmt.Errorf("publish refused on %q: %s", c.appName, c.playOnly)
 	}
 
 	// vals: ["publish", txID, null, streamName, publishType]
@@ -865,6 +889,18 @@ func writeChunk(w io.Writer, chunkSize, csid, timestamp uint32, typeID uint8, ms
 
 	_, err := w.Write(buf.Bytes())
 	return err
+}
+
+// looksLikeEncoder reports whether a connect command object comes from a
+// publishing client: type "nonprivate" (the FMLE convention) or an FMLE
+// flashVer, which FMLE, OBS, ffmpeg and librtmp-based encoders send.
+// Players (ffmpeg/ffplay play, VLC, Flash players) send neither.
+func looksLikeEncoder(info AMF0Object) bool {
+	if t, _ := info["type"].(AMF0String); string(t) == "nonprivate" {
+		return true
+	}
+	fv, _ := info["flashVer"].(AMF0String)
+	return strings.HasPrefix(string(fv), "FMLE")
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────

@@ -88,7 +88,11 @@ make urls          # prints example ingest/playback URLs
     AudioSpecificConfig), MP3, G.711. Starts at a keyframe (audio-only
     streams at the first frame); HEVC isn't sent (needs Enhanced RTMP).
     `conn.wmu` serializes writes between player goroutines and the
-    command loop.
+    command loop. Connect is accepted for an unknown app, or without the
+    app's push login when the client isn't an encoder (`looksLikeEncoder`:
+    no type "nonprivate", no FMLE flashVer), but only to play
+    (`conn.playOnly`); publish is refused. Our RTMP pull identifies as a
+    player (flashVer "LNX 9,0,124,2", like ffmpeg).
   - SRT playback (`srt/play.go`): request mode, streamid
     `#!::r=app/stream,m=request` or `play/app/stream`; continuous MPEG-TS
     via `tsout.Write`, grouped into whole 1316-byte datagrams

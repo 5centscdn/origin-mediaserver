@@ -171,10 +171,14 @@ func sendConnect(nc net.Conn, demux *ChunkDemuxer, addr, appName string) error {
 	payload, err := EncodeAMF0(
 		AMF0String("connect"),
 		AMF0Number(1),
+		// Identified as a player the way ffmpeg's RTMP input is: a
+		// non-FMLE flashVer and no type "nonprivate" (which marks an
+		// encoder; see looksLikeEncoder), so an origin with an RTMP push
+		// login on the app still lets this pull play.
 		AMF0Object{
-			"app":   AMF0String(appName),
-			"type":  AMF0String("nonprivate"),
-			"tcUrl": AMF0String(tcURL),
+			"app":      AMF0String(appName),
+			"flashVer": AMF0String("LNX 9,0,124,2"),
+			"tcUrl":    AMF0String(tcURL),
 		},
 	)
 	if err != nil {
