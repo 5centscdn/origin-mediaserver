@@ -6,6 +6,11 @@ type pesHeader struct {
 	pts, dts       int64
 	hasPTS, hasDTS bool
 	payload        []byte
+	// bounded: PES_packet_length was set. A bounded video PES holds at most
+	// 64 KB, so one picture may continue into the next PES; an unbounded
+	// one (length 0, what most encoders send for video) holds whole
+	// pictures. See Demuxer.au.
+	bounded bool
 }
 
 // parsePES parses one reassembled PES packet (starting at its 00 00 01
@@ -20,10 +25,12 @@ func parsePES(data []byte) (pesHeader, bool) {
 	}
 	// data[3] = stream_id (0xE0-0xEF video, 0xC0-0xDF audio) — not needed,
 	// the caller already knows which PID (and therefore which track) this is.
-	// data[4:6] = PES_packet_length — ignored; reassembly by "next start
+	// data[4:6] = PES_packet_length — not used for reassembly: "next start
 	// indicator" (see Demuxer.handlePES) already handles both the bounded
-	// (audio) and unbounded/zero (video) cases uniformly.
+	// (audio) and unbounded/zero (video) cases uniformly. Only whether it's
+	// set is kept (pesHeader.bounded).
 
+	bounded := data[4] != 0 || data[5] != 0
 	flags1 := data[6] // top 2 bits must be '10' per spec
 	if flags1&0xC0 != 0x80 {
 		return pesHeader{}, false
@@ -35,7 +42,7 @@ func parsePES(data []byte) (pesHeader, bool) {
 		return pesHeader{}, false
 	}
 
-	var h pesHeader
+	h := pesHeader{bounded: bounded}
 	ptsDtsFlags := (flags2 >> 6) & 0x03
 	off := headerStart
 	switch {

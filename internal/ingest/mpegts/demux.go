@@ -92,8 +92,11 @@ type Demuxer struct {
 	// 200 KB) arrives as several PES packets, each a slice or two with the
 	// same PTS. Published one Packet per slice, downstream sees several
 	// "keyframes" with one timestamp (the HLS packager even prefixes each
-	// with SPS/PPS) and players stall. A picture is complete when the next
-	// one starts (first_mb_in_slice == 0), so it's held one frame.
+	// with SPS/PPS) and players stall. After an unbounded PES (length 0,
+	// the usual for video) the picture is complete and published at once;
+	// after a bounded one it may continue, so it's held until the next
+	// picture starts (first_mb_in_slice == 0): one frame of latency, only
+	// for such sources.
 	au *pendingAU
 
 	// OnSCTE35Error, if set, is called (synchronously, on the demux
@@ -476,6 +479,9 @@ func (d *Demuxer) flushVideo(data []byte) {
 			}
 			d.au = &pendingAU{pkt: pkt, nal: nal}
 		}
+	}
+	if !h.bounded {
+		d.emitAU()
 	}
 }
 

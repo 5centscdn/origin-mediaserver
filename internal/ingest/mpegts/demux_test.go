@@ -552,7 +552,7 @@ func TestDemuxer_SlicesSplitAcrossPESBecomeOneAccessUnit(t *testing.T) {
 	sub := bus.Subscribe(context.Background())
 	defer sub.Close()
 	d := NewDemuxer(bus)
-	d.feedPackets(ts.Bytes())
+	d.feedPackets(setVideoPESLengths(t, ts.Bytes()))
 	d.Flush()
 
 	var video []*media.Packet
@@ -579,4 +579,74 @@ func TestDemuxer_SlicesSplitAcrossPESBecomeOneAccessUnit(t *testing.T) {
 	if n := bytes.Count(video[1].Data, []byte{0, 0, 0, 1, 0x41}); n != 2 || video[1].IsKeyframe {
 		t.Errorf("P packet holds %d slices (key=%v), want 2", n, video[1].IsKeyframe)
 	}
+}
+
+// TestDemuxer_UnboundedPESPublishedAtOnce: an unbounded video PES (length
+// 0, what most encoders and mux.TSMuxer send) holds a whole picture, so it
+// is published as soon as the PES ends, without waiting for the next one.
+func TestDemuxer_UnboundedPESPublishedAtOnce(t *testing.T) {
+	var ts bytes.Buffer
+	m := mux.NewTSMuxer(&ts, mux.StreamTypeH264, mux.StreamTypeAAC)
+	m.SetSPSPPS(decodeFixture(t, fixtureSPS), decodeFixture(t, fixturePPS))
+	if err := m.WriteVideo(withStartCode(decodeFixture(t, fixtureIDR)), 9000, 12600, true); err != nil {
+		t.Fatal(err)
+	}
+	// One more PES start so the first PES is handed to flushVideo.
+	if err := m.WriteVideo(withStartCode(decodeFixture(t, fixtureDelta)), 12600, 16200, false); err != nil {
+		t.Fatal(err)
+	}
+	bus := media.NewBus()
+	sub := bus.Subscribe(context.Background())
+	defer sub.Close()
+	d := NewDemuxer(bus)
+	d.feedPackets(ts.Bytes()) // no Flush: the IDR must already be out
+	select {
+	case pkt := <-sub.Chan():
+		if !pkt.IsKeyframe {
+			t.Errorf("first packet should be the IDR")
+		}
+	default:
+		t.Fatal("IDR from an unbounded PES was held back")
+	}
+}
+
+// setVideoPESLengths rewrites every video PES in ts (mux.TSMuxer output,
+// unbounded) with its real PES_packet_length, as a length-capping encoder
+// sends it.
+func setVideoPESLengths(t *testing.T, ts []byte) []byte {
+	t.Helper()
+	out := append([]byte(nil), ts...)
+	payloadStart := func(pkt []byte) int {
+		off := 4
+		if pkt[3]&0x20 != 0 {
+			off += 1 + int(pkt[4])
+		}
+		return off
+	}
+	var startPkt, startOff, total int = -1, 0, 0
+	finish := func() {
+		if startPkt < 0 {
+			return
+		}
+		n := total - 6
+		if n > 0xFFFF {
+			t.Fatalf("PES too long for a bounded length: %d", n)
+		}
+		out[startPkt+startOff+4], out[startPkt+startOff+5] = byte(n>>8), byte(n)
+	}
+	for i := 0; i+188 <= len(out); i += 188 {
+		pkt := out[i : i+188]
+		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		if pid != mux.PIDVideo || pkt[3]&0x10 == 0 {
+			continue
+		}
+		off := payloadStart(pkt)
+		if pkt[1]&0x40 != 0 { // PUSI: a new PES starts here
+			finish()
+			startPkt, startOff, total = i, off, 0
+		}
+		total += 188 - off
+	}
+	finish()
+	return out
 }
