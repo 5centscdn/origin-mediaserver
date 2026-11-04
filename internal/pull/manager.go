@@ -275,6 +275,37 @@ func (m *Manager) run(ctx context.Context, w *worker, source db.PullSource, tm t
 			a = dial(ctx, source, urls[idx])
 		}
 
+		// Not listed as live until media arrives: a source that accepts
+		// the connection and then fails, or sends nothing (an IPTV account
+		// over its connection limit, an RTMP path with no publisher), was
+		// shown in Live Streams with a green dot and 0 B while it flapped.
+		switch waitFirstMedia(ctx, a, tm) {
+		case firstMediaCancelled:
+			a.stop()
+			return
+		case firstMediaEnded:
+			if a.err != nil {
+				log.Error("pull source ended before sending media", "url", a.url, "err", a.err)
+			}
+			m.attempts.Add(1)
+			m.failures.Add(1)
+			if m.retryOrStop(ctx, &idx, len(urls), hasFallback, source.Reconnect, reconnectDelay) {
+				continue
+			}
+			m.finish(w, source)
+			return
+		case firstMediaTimeout:
+			log.Warn("pull source sent no media, giving up on it", "url", a.url, "after", tm.stall)
+			a.stop()
+			m.attempts.Add(1)
+			m.failures.Add(1)
+			if m.retryOrStop(ctx, &idx, len(urls), hasFallback, source.Reconnect, reconnectDelay) {
+				continue
+			}
+			m.finish(w, source)
+			return
+		}
+
 		// StopFunc is deliberately left unset here: Registry.Unregister calls
 		// it on every unregister, including the ordinary end of one attempt
 		// that's about to reconnect — wiring it to w.cancel would tear down
@@ -377,6 +408,73 @@ func (m *Manager) run(ctx context.Context, w *worker, source db.PullSource, tm t
 		}
 	}
 
+	m.finish(w, source)
+}
+
+// retryOrStop decides what follows a failed attempt that was never
+// listed: the next fallback URL straight away, else (with reconnect on)
+// the first URL again after delay. false means the worker should end.
+func (m *Manager) retryOrStop(ctx context.Context, idx *int, n int, hasFallback, reconnect bool, delay time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if hasFallback {
+		*idx++
+		if *idx < n {
+			return true
+		}
+		*idx = 0
+	}
+	if !reconnect {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(delay):
+		return true
+	}
+}
+
+type firstMedia int
+
+const (
+	firstMediaArrived firstMedia = iota
+	firstMediaEnded
+	firstMediaTimeout
+	firstMediaCancelled
+)
+
+// waitFirstMedia waits until a's bus has carried audio/video, a ends, or
+// tm.stall passes with nothing. Packets published meanwhile have no
+// subscriber yet and are dropped; codec info is kept on the Bus, so the
+// outputs started at registration begin at the next keyframe.
+func waitFirstMedia(ctx context.Context, a *attempt, tm timing) firstMedia {
+	if !a.bus.LastMediaAt().IsZero() {
+		return firstMediaArrived
+	}
+	t := time.NewTicker(tm.poll)
+	defer t.Stop()
+	deadline := time.NewTimer(tm.stall)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return firstMediaCancelled
+		case <-a.done:
+			return firstMediaEnded // gone already: never list it
+		case <-deadline.C:
+			return firstMediaTimeout
+		case <-t.C:
+			if !a.bus.LastMediaAt().IsZero() {
+				return firstMediaArrived
+			}
+		}
+	}
+}
+
+// finish clears the worker's entry and marks the source inactive.
+func (m *Manager) finish(w *worker, source db.PullSource) {
 	// Only clean up if we're still the current worker for this ID — a
 	// Stop() immediately followed by a Start() would already have replaced
 	// us in the map, and we must not delete the new worker's entry.

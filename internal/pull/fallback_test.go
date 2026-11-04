@@ -130,3 +130,60 @@ func TestProtocolForURL(t *testing.T) {
 		}
 	}
 }
+
+// TestPull_ListedOnlyWithMedia: a source that refuses the connection or
+// connects and sends nothing (an IPTV account over its connection limit)
+// must never appear in the registry, i.e. Live Streams. Once it sends
+// media it's listed, and it keeps retrying until then.
+func TestPull_ListedOnlyWithMedia(t *testing.T) {
+	stallTimeout, probeTimeout, probeSteady, pollEvery = 300*time.Millisecond, 2*time.Second, 300*time.Millisecond, 20*time.Millisecond
+
+	const u = "fake://iptv/ch1"
+	up := &fakeUpstreams{state: map[string]string{u: "down"}}
+	supportedProtocols["fake"] = up.pull
+	defer delete(supportedProtocols, "fake")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	database, err := db.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := media.NewRegistry()
+	m := NewManager(database, reg, nil)
+	if err := m.Start(ctx, db.PullSource{ID: "p2", AppName: "Atinka", StreamName: "tv773", URL: u,
+		Protocol: "fake", Reconnect: true, ReconnectDelayS: 1}); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop("p2")
+	key := media.StreamKey{App: "Atinka", Name: "tv773"}
+
+	watch := func(state string, d time.Duration) {
+		t.Helper()
+		up.set(u, state)
+		deadline := time.Now().Add(d)
+		for time.Now().Before(deadline) {
+			if reg.Get(key) != nil {
+				t.Fatalf("stream listed while the source is %q", state)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	watch("down", 800*time.Millisecond)
+	watch("silent", 800*time.Millisecond)
+
+	up.set(u, "up")
+	deadline := time.Now().Add(4 * time.Second)
+	for reg.Get(key) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("stream not listed after the source started sending media")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reg.Get(key).Bus.LastMediaAt().IsZero() {
+		t.Error("listed before any media")
+	}
+	if a, f := m.Stats(); a < 2 || f < 2 {
+		t.Errorf("attempts=%d failures=%d, want the failed tries counted", a, f)
+	}
+}
