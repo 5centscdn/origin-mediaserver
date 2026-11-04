@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,5 +232,107 @@ func writeTestResponse(conn net.Conn, cseq, status int, headers map[string]strin
 	conn.Write([]byte(b.String()))
 	if len(body) > 0 {
 		conn.Write(body)
+	}
+}
+
+// TestPull_KeepsSessionAlive: a strict server (Dahua-like) closes a session
+// that sends nothing within its Session timeout. The client must send
+// keepalives with the session ID, fall back to OPTIONS when GET_PARAMETER
+// is rejected, and read the replies that arrive between RTP frames.
+func TestPull_KeepsSessionAlive(t *testing.T) {
+	keepaliveMin = 100 * time.Millisecond
+	defer func() { keepaliveMin = 5 * time.Second }()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	type seen struct{ getParam, options int }
+	result := make(chan seen, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		sps, pps, idr := mustDecode(fixtureSPS), mustDecode(fixturePPS), mustDecode(fixtureIDR)
+		sdp := "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Fake\r\nt=0 0\r\n" +
+			"m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 sprop-parameter-sets=" +
+			base64.StdEncoding.EncodeToString(sps) + "," + base64.StdEncoding.EncodeToString(pps) + "\r\na=control:trackID=1\r\n"
+		var mu sync.Mutex // media and responses share the connection
+		write := func(cseq, status int, h map[string]string, body []byte) {
+			mu.Lock()
+			writeTestResponse(conn, cseq, status, h, body)
+			mu.Unlock()
+		}
+		var s seen
+		stop := make(chan struct{})
+		defer close(stop)
+		for {
+			// Session timeout 1 s: silence for longer ends the session.
+			conn.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
+			req, err := readTestRequest(r)
+			if err != nil {
+				result <- s
+				return
+			}
+			switch req.method {
+			case "DESCRIBE":
+				write(req.cseq, 200, map[string]string{"Content-Type": "application/sdp"}, []byte(sdp))
+			case "SETUP":
+				write(req.cseq, 200, map[string]string{"Transport": req.headers["transport"], "Session": "S1;timeout=1"}, nil)
+			case "PLAY":
+				write(req.cseq, 200, nil, nil)
+				go func() {
+					for i := 0; ; i++ {
+						select {
+						case <-stop:
+							return
+						case <-time.After(40 * time.Millisecond):
+						}
+						pkt := &rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: 96, SequenceNumber: uint16(i), Timestamp: uint32(i * 3600), Marker: true}, Payload: idr}
+						mu.Lock()
+						writeInterleaved(conn, 0, pkt)
+						mu.Unlock()
+					}
+				}()
+			case "GET_PARAMETER":
+				if req.headers["session"] == "S1" {
+					s.getParam++
+				}
+				write(req.cseq, 501, nil, nil)
+			case "OPTIONS":
+				if req.headers["session"] == "S1" {
+					s.options++
+				}
+				write(req.cseq, 200, map[string]string{"Public": "DESCRIBE, SETUP, PLAY, TEARDOWN, OPTIONS"}, nil)
+			case "TEARDOWN":
+				write(req.cseq, 200, nil, nil)
+				result <- s
+				return
+			}
+		}
+	}()
+
+	bus := media.NewBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- Pull(ctx, "rtsp://"+ln.Addr().String()+"/cam", bus) }()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("session ended after %v: %v (keepalive not sent?)", time.Second, err)
+	case <-time.After(3 * time.Second):
+	}
+	if time.Since(bus.LastMediaAt()) > 500*time.Millisecond {
+		t.Error("media stopped flowing")
+	}
+	cancel()
+	s := <-result
+	if s.getParam < 1 || s.options < 2 {
+		t.Errorf("keepalives: GET_PARAMETER=%d OPTIONS=%d, want 1 rejected GET_PARAMETER then OPTIONS", s.getParam, s.options)
 	}
 }

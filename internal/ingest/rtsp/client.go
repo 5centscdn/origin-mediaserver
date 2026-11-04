@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -30,9 +32,11 @@ const dialTimeout = 10 * time.Second
 // Scope: TCP-interleaved RTP delivery only (RTSP's "RTP/AVP/TCP" transport)
 // — avoids needing separate UDP ports/NAT traversal, at the cost of not
 // supporting servers that only offer UDP transport. RTCP is not sent or
-// processed; most servers tolerate a receive-only client that never sends
-// receiver reports, though a strict one could eventually time out the
-// session — a real, documented limitation, not an oversight.
+// processed. The session is kept alive instead with GET_PARAMETER (OPTIONS
+// if the server rejects that) every half of the timeout the server gives
+// in its Session header (60 s if none): Dahua devices close a session that
+// hears nothing for its timeout, which showed as every camera on one
+// device dropping with EOF every ~90 s.
 func Pull(ctx context.Context, rawURL string, bus *media.Bus) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -111,7 +115,36 @@ func Pull(ctx context.Context, rawURL string, bus *media.Bus) error {
 	if err := c.play(baseURL); err != nil {
 		return fmt.Errorf("play: %w", err)
 	}
-	defer c.teardown(baseURL)
+
+	// Keepalive: from here on the reader below owns the connection's read
+	// side, so keepalive requests are only written, and their responses
+	// are consumed by readInterleavedFrame between RTP frames.
+	kaStop := make(chan struct{})
+	kaDone := make(chan struct{})
+	go func() {
+		defer close(kaDone)
+		t := time.NewTicker(c.keepaliveInterval())
+		defer t.Stop()
+		for {
+			select {
+			case <-kaStop:
+				return
+			case <-t.C:
+				method := "GET_PARAMETER"
+				if c.noGetParameter.Load() {
+					method = "OPTIONS"
+				}
+				if err := c.send(method, baseURL, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(kaStop)
+		<-kaDone
+		c.teardown(baseURL)
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -163,7 +196,30 @@ type session struct {
 	authScheme  string // "" (not yet challenged) | "basic" | "digest"
 	digestRealm string
 	digestNonce string
+
+	// timeoutS is the session timeout from SETUP's Session header
+	// (";timeout=N"), 0 if none was given.
+	timeoutS int
+	// noGetParameter is set once the server rejects a GET_PARAMETER
+	// keepalive (405/501); later keepalives use OPTIONS.
+	noGetParameter atomic.Bool
+	// wmu serializes writes: after PLAY the keepalive goroutine writes
+	// while the read loop reads, and teardown writes after it stops.
+	wmu sync.Mutex
 }
+
+// keepaliveInterval is half the server's session timeout (60 s when it
+// gives none), at least 5 s.
+func (c *session) keepaliveInterval() time.Duration {
+	t := c.timeoutS
+	if t <= 0 {
+		t = 60
+	}
+	return max(time.Duration(t)*time.Second/2, keepaliveMin)
+}
+
+// keepaliveMin is the shortest keepalive interval (a variable for tests).
+var keepaliveMin = 5 * time.Second
 
 func (c *session) describe(uri string) ([]byte, error) {
 	status, headers, body, err := c.roundTrip("DESCRIBE", uri, map[string]string{"Accept": "application/sdp"}, nil)
@@ -189,8 +245,17 @@ func (c *session) setup(uri string, interleavedChannel int) error {
 		return fmt.Errorf("status %d", status)
 	}
 	if sessionHeader, ok := respHeaders["session"]; ok {
-		// Session header may carry ";timeout=N" — keep only the ID.
-		c.sessionID, _, _ = strings.Cut(sessionHeader, ";")
+		// Session header may carry ";timeout=N": the ID goes in later
+		// requests, the timeout paces keepalives.
+		id, params, _ := strings.Cut(sessionHeader, ";")
+		c.sessionID = strings.TrimSpace(id)
+		for _, p := range strings.Split(params, ";") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(p), "="); ok && strings.EqualFold(k, "timeout") {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+					c.timeoutS = n
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -227,6 +292,17 @@ func (c *session) roundTrip(method, uri string, headers map[string]string, body 
 }
 
 func (c *session) doRequest(method, uri string, headers map[string]string, body []byte) (status int, respHeaders map[string]string, respBody []byte, err error) {
+	if err := c.send(method, uri, headers, body...); err != nil {
+		return 0, nil, nil, err
+	}
+	return c.readResponse()
+}
+
+// send writes one request without reading the response: after PLAY the
+// media read loop consumes responses (see readInterleavedFrame).
+func (c *session) send(method, uri string, headers map[string]string, body ...byte) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	c.cseq++
 
 	var b strings.Builder
@@ -248,15 +324,14 @@ func (c *session) doRequest(method, uri string, headers map[string]string, body 
 	b.WriteString("\r\n")
 
 	if _, err := io.WriteString(c.w, b.String()); err != nil {
-		return 0, nil, nil, err
+		return err
 	}
 	if len(body) > 0 {
 		if _, err := c.w.Write(body); err != nil {
-			return 0, nil, nil, err
+			return err
 		}
 	}
-
-	return c.readResponse()
+	return nil
 }
 
 // readResponse reads one RTSP status line + headers + (if Content-Length is
@@ -316,6 +391,17 @@ func (c *session) readLine() (string, error) {
 // big-endian length, then that many bytes of RTP/RTCP payload.
 func (c *session) readInterleavedFrame() (channel int, payload []byte, err error) {
 	for {
+		// A response to a keepalive can arrive between RTP frames.
+		if next, _ := c.conn.Peek(5); string(next) == "RTSP/" {
+			status, _, _, err := c.readResponse()
+			if err != nil {
+				return 0, nil, err
+			}
+			if status == 405 || status == 501 {
+				c.noGetParameter.Store(true)
+			}
+			continue
+		}
 		magic, err := c.conn.ReadByte()
 		if err != nil {
 			return 0, nil, err
