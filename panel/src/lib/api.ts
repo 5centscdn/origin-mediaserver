@@ -507,6 +507,57 @@ export async function getNodeInfo(): Promise<NodeInfo> {
   return apiFetch<NodeInfo>('/node')
 }
 
+// ---------- Cluster ----------
+
+export interface ClusterNode {
+  node_id: string
+  node_name: string
+  url: string
+  priority: number
+  reachable: boolean
+  live_streams: number
+  ndvr_streams: number
+  ndvr_publishing: number
+  last_seen: string
+  self: boolean
+}
+
+export interface ClusterInfo {
+  enabled: boolean
+  connected: boolean
+  ready: boolean
+  nats_url?: string
+  ownership_policy?: string
+  heartbeat_interval_s?: number
+  peer_forget_s?: number
+  nodes: ClusterNode[]
+}
+
+export async function getCluster(): Promise<ClusterInfo> {
+  return apiFetch<ClusterInfo>('/cluster')
+}
+
+// Servers added by hand (admin only). id "local" is this server.
+export interface SavedServer {
+  id: string
+  name: string
+  url: string
+  note: string
+  created_at: string
+}
+
+export async function listServers(): Promise<SavedServer[]> {
+  return apiFetch<SavedServer[]>('/servers')
+}
+
+export async function addServer(data: { name: string; url: string; note?: string }): Promise<SavedServer> {
+  return apiFetch<SavedServer>('/servers', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export async function deleteServer(id: string): Promise<void> {
+  await apiFetch<void>(`/servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 // DVR config update
 export async function updateDVRConfig(data: { window_seconds: number; enabled?: boolean }): Promise<void> {
   await apiFetch<void>('/dvr-config', {

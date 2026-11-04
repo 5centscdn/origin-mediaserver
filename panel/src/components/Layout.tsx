@@ -20,6 +20,7 @@ import {
   X,
   PanelLeftClose,
   PanelLeftOpen,
+  Server,
   type LucideIcon,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -29,6 +30,7 @@ import {
   getToken,
   logout,
   getNodeInfo,
+  getCluster,
 } from '@/lib/api'
 import { ToastProvider } from './ui/Toast'
 import { PreviewProvider } from './preview/StreamPreview'
@@ -43,7 +45,8 @@ interface NavItem {
 
 // Ordered by an operator's workflow: watch what's live, then the config
 // hierarchy (application → stream → ABR), then ingest and recording.
-// Single-node release: no Servers/cluster section yet.
+// Cluster: the origin servers behind the CDN (discovered over NATS or
+// added by hand).
 const NAV: { group: string; items: NavItem[] }[] = [
   { group: 'Overview', items: [{ href: '/', label: 'Dashboard', icon: LayoutDashboard }] },
   {
@@ -57,6 +60,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { href: '/failover', label: 'Failover', icon: ShieldAlert },
       { href: '/dvr', label: 'DVR', icon: HardDrive },
     ],
+  },
+  {
+    group: 'Cluster',
+    items: [{ href: '/cluster', label: 'Servers', icon: Server }],
   },
   {
     group: 'Administration',
@@ -77,6 +84,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // (and SWR key) as the live cache banner, so no extra polling.
   const { data: node, error: nodeErr } = useSWR(ready ? 'node' : null, getNodeInfo, { refreshInterval: 15000 })
   const nodeUp = !!node && !nodeErr
+  // Same SWR key as the Cluster → Servers page, so the two share one poll.
+  const { data: cluster } = useSWR(ready ? 'cluster' : null, getCluster, { refreshInterval: 15000 })
+  const clusterLabel = cluster?.enabled
+    ? `${cluster.nodes.filter((n) => n.reachable).length}/${cluster.nodes.length} servers`
+    : 'single node'
   const [collapsed, setCollapsed] = useState(false)
   const [drawer, setDrawer] = useState(false)
   // ≥1024px: the sidebar follows the user's expand/collapse choice.
@@ -220,7 +232,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <div className="mt-1 truncate text-[13px] font-medium text-fg" title={node?.node_name}>
               {node?.node_name ?? 'This server'}
             </div>
-            <div className="truncate font-mono text-xs text-fg-muted">v{node?.version ?? '—'} · single node</div>
+            <div className="truncate font-mono text-xs text-fg-muted">v{node?.version ?? '—'} · {clusterLabel}</div>
           </div>
         )}
         <div className={clsx('flex gap-1', mini && 'flex-col items-center')}>

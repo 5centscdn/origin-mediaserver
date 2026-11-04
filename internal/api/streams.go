@@ -1293,8 +1293,17 @@ func (s *Server) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.URL = strings.TrimRight(strings.TrimSpace(req.URL), "/")
 	if req.Name == "" || req.URL == "" {
 		jsonError(w, http.StatusBadRequest, "name and url are required")
+		return
+	}
+	// The panel renders the URL as a link: only plain http(s) base URLs,
+	// never javascript: or credentials.
+	if u, err := url.Parse(req.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") ||
+		u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		jsonError(w, http.StatusBadRequest, "url must be an http(s) base URL like http://origin-2.example.com:8080")
 		return
 	}
 
@@ -1303,6 +1312,10 @@ func (s *Server) handleAddServer(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO servers (id, name, url, note) VALUES (?, ?, ?, ?)`,
 		id, req.Name, req.URL, req.Note,
 	)
+	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
+		jsonError(w, http.StatusConflict, "a server with this URL is already added")
+		return
+	}
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return

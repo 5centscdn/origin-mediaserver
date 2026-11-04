@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -407,5 +408,49 @@ func (m *Manager) Peers() []Peer {
 		}
 		out = append(out, *p)
 	}
+	return out
+}
+
+// PeerStatus is one peer as shown on the panel's Cluster page.
+type PeerStatus struct {
+	NodeID      string    `json:"node_id"`
+	NodeName    string    `json:"node_name"`
+	URL         string    `json:"url"`
+	Priority    int       `json:"priority"`
+	Reachable   bool      `json:"reachable"` // heartbeat within peerStaleMultiplier intervals
+	LiveStreams int       `json:"live_streams"`
+	DVRStreams  int       `json:"ndvr_streams"`
+	Publishing  int       `json:"ndvr_publishing"`
+	LastSeen    time.Time `json:"last_seen"`
+}
+
+// Connected reports whether this node is connected to NATS right now.
+func (m *Manager) Connected() bool {
+	nc := m.nc.Load()
+	return nc != nil && nc.IsConnected()
+}
+
+// PeerStatuses lists every known peer, including unreachable ones that
+// aren't forgotten yet, sorted by name.
+func (m *Manager) PeerStatuses() []PeerStatus {
+	freshAge := m.interval() * peerStaleMultiplier
+	now := time.Now()
+	m.mu.RLock()
+	out := make([]PeerStatus, 0, len(m.peers))
+	for _, p := range m.peers {
+		ps := PeerStatus{
+			NodeID: p.NodeID, NodeName: p.NodeName, URL: p.URL, Priority: p.Priority,
+			Reachable:   now.Sub(p.LastSeen) <= freshAge,
+			LiveStreams: len(p.Streams), DVRStreams: len(p.DVR), LastSeen: p.LastSeen,
+		}
+		for _, st := range p.DVR {
+			if st.Publishing {
+				ps.Publishing++
+			}
+		}
+		out = append(out, ps)
+	}
+	m.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeName < out[j].NodeName })
 	return out
 }

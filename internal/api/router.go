@@ -154,10 +154,9 @@ func (s *Server) Handler() http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireRole("admin"))
 
-				// Saved server list (servers table). The panel no longer has a
-				// Servers page (single-node release); kept, admin-only, for the
-				// planned Cluster Management feature. Peer discovery is the
-				// separate read-only /nodes (internal/node).
+				// Saved server list (servers table): servers added by hand on
+				// the panel's Cluster → Servers page, shown next to the peers
+				// discovered over NATS (/cluster). Admin only.
 				r.Get("/servers", s.handleListServers)
 				r.Post("/servers", s.handleAddServer)
 				r.Delete("/servers/{id}", s.handleDeleteServer)
@@ -260,6 +259,9 @@ func (s *Server) Handler() http.Handler {
 				// (see internal/node) — read-only, distinct from the manually-
 				// curated "servers" bookmark list below.
 				r.Get("/nodes", s.handleListNodes)
+				// Cluster → Servers page: multinode status + every known
+				// node, including unreachable ones.
+				r.Get("/cluster", s.handleCluster)
 
 			})
 		})

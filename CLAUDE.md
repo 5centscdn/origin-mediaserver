@@ -143,7 +143,12 @@ make urls          # prints example ingest/playback URLs
   `media.Registry.EventCounts` and `pull.Manager.Stats`. Linux only;
   elsewhere fields are null and the panel shows them as unavailable.
 - `panel/`: Next.js 14 management UI with pages for dashboard, streams,
-  applications, ABR, pull, DVR, failover, servers, users, settings and login.
+  applications, ABR, pull, DVR, failover, cluster servers, users, settings
+  and login. Cluster → Servers (`app/cluster`) merges `GET /api/v1/cluster`
+  (this node plus NATS-discovered peers, including unreachable ones) with
+  the admin-only hand-added `servers` list, matched on URL (scheme + host +
+  port). `POST /servers` only accepts plain http(s) base URLs, because the
+  panel renders them as links.
   Design system:
   - Colors are CSS variables in `src/app/globals.css` (RGB channels,
     contrast-checked against the card surface), exposed as semantic Tailwind
