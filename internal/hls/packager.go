@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -360,7 +361,8 @@ func (p *Packager) handleAudio(pkt *media.Packet) error {
 	// ingest source. Handled as its own branch rather than folding into
 	// the logic below, which is entirely keyframe/segStartDTS-from-video
 	// shaped.
-	if p.stream.SourceType == "icecast" {
+	// Icecast push ("icecast") and Icecast pull ("icecast_pull") alike.
+	if strings.HasPrefix(p.stream.SourceType, "icecast") {
 		return p.handleAudioOnlyTS(pkt)
 	}
 
