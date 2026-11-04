@@ -312,3 +312,20 @@ enabled              = false
 nats_url             = "nats://localhost:4222"
 nats_creds           = ""   # path to NATS credentials file
 heartbeat_interval_s = 5
+advertise_url        = ""   # this node's base URL as peers/CDN see it
+
+# nDVR stream ownership (only streams with nDVR enabled; others are never
+# synced or checked). Every node behind the CDN answers nDVR live-edge
+# playlists (playlist.m3u8, chunks.m3u8, manifest.mpd, playlist_dvr*,
+# manifest_dvr*, ABR masters) with 200 only if it owns the stream:
+#   1. the node receiving the encoder wins;
+#   2. with no encoder anywhere, the node whose recording ends latest wins;
+#   3. a known non-owner answers 404 (Cache-Control: no-store) so the CDN
+#      retries the next origin; if ownership depends on a peer that has
+#      stopped heartbeating, the answer is 503 until it returns or is
+#      forgotten after peer_forget_s.
+# Time-range DVR requests (playlist_dvr_range-*) are served by any node
+# whose recording covers the range.
+ownership_policy = "first_publisher"  # or "priority"
+node_priority    = 100                # lower wins; tie-breaker
+peer_forget_s    = 60

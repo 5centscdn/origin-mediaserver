@@ -105,6 +105,33 @@ make urls          # prints example ingest/playback URLs
   sources, failover rules and SCTE-35 events.
 - `node`: multi-node peer discovery over NATS heartbeats
   (`GET /api/v1/nodes`). It's discovery only, not central management.
+  Heartbeats also carry each node's nDVR ownership state (`DVR`), a
+  generation counter, `node_priority`, and a `Leaving` flag sent on clean
+  shutdown. A peer that goes quiet is hidden from `Peers()` after 3
+  intervals but kept as "unreachable" in `DVRView` until `peer_forget_s`.
+  A restarted peer (same name and URL, new ID) replaces its old entry.
+- `dvrowner`: nDVR cluster ownership, multinode only. It decides which
+  origin answers an nDVR stream's live-edge playlists behind a CDN that
+  retries the next origin on 404. Streams without nDVR are bypassed after
+  one cached eligibility lookup (`streamoutputs.DVREnabled`, cache cleared
+  on application/stream config writes) and never appear in heartbeats.
+  The owner is the publishing node (`ownership_policy` first_publisher or
+  priority, then `node_priority`, then name). With no encoder anywhere, the
+  owner is the node whose recording ends latest (dvr_segments timeline,
+  not file times). Ownership that depends on an unreachable peer, or a
+  view that isn't ready yet (not connected to NATS, or connected less than
+  2 heartbeats ago), is `Unknown`.
+  Timelines are loaded once, then updated from `dvr.Observer` events
+  (segment indexed, recording start/stop → immediate heartbeat, prune →
+  reload), so a request costs map lookups only (~80 ns bypass, ~260 ns
+  decided). Gates in `api/dvrowner_gate.go`:
+  - non-owner playlists → 404, `Unknown` → 503 (`Cache-Control:
+    no-store`, `X-Origin-Owner`);
+  - live segments → 404 on a known non-owner;
+  - `playlist_dvr_range-*` → served by any node whose recording overlaps
+    the range;
+  - recorded DVR files → never gated (immutable, named by session);
+  - ABR masters → combine their variants' decisions (`dvrowner.Combine`).
 - `metrics`: Prometheus.
 - `sysmon`: dashboard monitoring. One goroutine samples `/proc` and statfs
   every 5 s (CPU, memory, disks, host NIC throughput, established
@@ -207,7 +234,7 @@ make urls          # prints example ingest/playback URLs
   retimed yet. POC types 1 and field-coded pictures fall back to ordering
   by source PTS, which gives a valid DTS but can't fix duplicate PTS.
 - ABR has two sources, both served at `/{app}/{group}/playlist.m3u8` by
-  `api.abrMaster` (`internal/api/abr_master.go`):
+  `api.liveABRTracks`/`renderABRMaster` (`internal/api/abr_master.go`):
   - Manual groups: panel ABR editor (`panel/src/app/abr`, modelled on the
     standalone DVR server), stored in `abr_groups`/`abr_variants`. A
     variant can come from another app (`src_app_name`). Saved in one go
@@ -237,7 +264,7 @@ make urls          # prints example ingest/playback URLs
 - nDVR doesn't record HEVC (no `hvc1` sample entry in `mux`'s fMP4
   writer) or SCTE-35 markers (no `emsg`).
 - nDVR ABR rewind is HLS only. `/{app}/{group}/playlist_dvr*.m3u8` is a
-  master over each variant's own recording (`api.abrDVRMaster` in
+  master over each variant's own recording (`api.dvrABRTracks`/`renderABRDVRMaster` in
   `internal/api/abr_dvr.go`). Nothing is recorded under the group name.
   Variants come from the manual group, then the live `%i` group, then
   recorded streams named `{group}{N}` once the encoder is gone. Variant
@@ -248,3 +275,12 @@ make urls          # prints example ingest/playback URLs
   attributes come from the recording (`dvr.Engine.VariantInfo`). There's no
   group `manifest_dvr*.mpd` yet (it would need the variants merged into one
   MPD).
+- nDVR cluster ownership assumes every node has the same application and
+  stream config (eligibility is resolved locally) and NTP-synced clocks
+  (`first_publisher` compares publish start times, offline ownership
+  compares recording end times). For up to two heartbeats after a node
+  connects to NATS, it serves a stream it's publishing without having
+  heard every peer yet, so a dual publish can briefly have two owners. An
+  ABR group whose variants are published on different nodes follows its
+  first variant for the master, but each variant playlist follows its
+  own owner.

@@ -15,6 +15,7 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/db"
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
+	"github.com/5centscdn/origin-mediaserver/internal/dvrowner"
 	"github.com/5centscdn/origin-mediaserver/internal/failover"
 	"github.com/5centscdn/origin-mediaserver/internal/hls"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -37,7 +38,8 @@ type Server struct {
 	metrics      *metrics.Metrics
 	hlsPlaylists *hls.PlaylistRegistry
 	webrtcMgr    *webrtc.Manager
-	nodeMgr      *node.Manager // nil when multinode.enabled is false
+	nodeMgr      *node.Manager     // nil when multinode.enabled is false
+	dvrOwner     *dvrowner.Tracker // nil when multinode.enabled is false
 	scte35       *scte35ctrl.Manager
 
 	// baseCtx is the process's root context (not a request's r.Context(),
@@ -237,14 +239,19 @@ func (s *Server) Handler() http.Handler {
 
 				// Applications + per-stream configs
 				r.Get("/applications", s.handleListApplications)
-				r.Post("/applications", s.handleCreateApplication)
 				r.Get("/applications/{id}", s.handleGetApplication)
-				r.Put("/applications/{id}", s.handleUpdateApplication)
-				r.Delete("/applications/{id}", s.handleDeleteApplication)
 				r.Get("/applications/{id}/streams", s.handleListStreamConfigs)
-				r.Post("/applications/{id}/streams", s.handleCreateStreamConfig)
-				r.Put("/applications/{id}/streams/{sid}", s.handleUpdateStreamConfig)
-				r.Delete("/applications/{id}/streams/{sid}", s.handleDeleteStreamConfig)
+				// Writes can switch nDVR on or off, which changes which
+				// streams take part in cluster ownership.
+				r.Group(func(r chi.Router) {
+					r.Use(s.invalidateDVROwnership)
+					r.Post("/applications", s.handleCreateApplication)
+					r.Put("/applications/{id}", s.handleUpdateApplication)
+					r.Delete("/applications/{id}", s.handleDeleteApplication)
+					r.Post("/applications/{id}/streams", s.handleCreateStreamConfig)
+					r.Put("/applications/{id}/streams/{sid}", s.handleUpdateStreamConfig)
+					r.Delete("/applications/{id}/streams/{sid}", s.handleDeleteStreamConfig)
+				})
 
 				// Node info (this node only — multi-node adds more here)
 				r.Get("/node", s.handleNodeInfo)
@@ -293,7 +300,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/{app}/{stream}/audio/index.m3u8", s.handleAudioChunks)
 	r.Get("/{app}/{stream}/audio/{segment}", s.handleAudioSegment)
 	r.Get("/{app}/{stream}/{srcApp}/{srcStream}/chunks.m3u8", s.handleVariantChunks)
-	// ABR variant rewind (abrDVRMaster's variant URIs), same layout as live.
+	// ABR variant rewind (renderABRDVRMaster's variant URIs), same layout as live.
 	r.Get("/{app}/{stream}/{srcApp}/{srcStream}/{dvrfile:(playlist|manifest)_dvr[^/]*}", s.handleVariantDVRManifest)
 	r.Get("/{app}/{stream}/{srcApp}/{srcStream}/dvr/{session}/{file}", s.handleVariantDVRFile)
 	r.Get("/{app}/{stream}/{srcApp}/{srcStream}/{segment}", s.handleVariantSegment)

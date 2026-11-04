@@ -79,6 +79,8 @@ type Engine struct {
 	// recorder.run) — again keyed by StreamKey on purpose: it orders writes
 	// to one storage directory/index key across *media.Stream instances.
 	writers map[media.StreamKey]chan struct{}
+
+	observer Observer // nil unless SetObserver was called
 }
 
 // Options is a stream's resolved nDVR settings, from streamoutputs.
@@ -177,6 +179,9 @@ func (e *Engine) CleanupOldSegments(ctx context.Context) error {
 	}
 	if total > 0 {
 		e.log.Info("cleaned up DVR segments", "count", total)
+		if e.observer != nil {
+			e.observer.Pruned()
+		}
 	}
 	return nil
 }

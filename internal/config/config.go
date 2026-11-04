@@ -273,6 +273,25 @@ type MultinodeConfig struct {
 	// address for anyone but this host itself.
 	AdvertiseURL       string `toml:"advertise_url"`
 	HeartbeatIntervalS int    `toml:"heartbeat_interval_s"`
+
+	// nDVR stream ownership (internal/dvrowner). Applies only to streams
+	// with nDVR enabled, and only while multinode is enabled.
+	//
+	// OwnershipPolicy picks the owner when more than one node is
+	// receiving the same stream: "first_publisher" (default) keeps the
+	// node that started publishing first, so a second encoder connection
+	// never steals playback; "priority" prefers the lowest NodePriority.
+	// Either way ties fall back to NodePriority, then node name.
+	OwnershipPolicy string `toml:"ownership_policy"`
+	// NodePriority: lower wins (1 = primary). It's the tie-breaker for
+	// equal publish times and equal DVR end times, and the main rule
+	// under ownership_policy = "priority". Default 100.
+	NodePriority int `toml:"node_priority"`
+	// PeerForgetS is how long a peer that stopped heartbeating stays known
+	// as "unreachable" before it's treated as gone. Until then nDVR
+	// ownership that depends on it answers 503 rather than guessing.
+	// Default 60.
+	PeerForgetS int `toml:"peer_forget_s"`
 }
 
 func Load(path string) (*Config, error) {
@@ -387,6 +406,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Multinode.HeartbeatIntervalS == 0 {
 		c.Multinode.HeartbeatIntervalS = 5
+	}
+	if c.Multinode.OwnershipPolicy == "" {
+		c.Multinode.OwnershipPolicy = "first_publisher"
+	}
+	if c.Multinode.NodePriority == 0 {
+		c.Multinode.NodePriority = 100
+	}
+	if c.Multinode.PeerForgetS == 0 {
+		c.Multinode.PeerForgetS = 60
 	}
 	if c.Multinode.AdvertiseURL == "" {
 		c.Multinode.AdvertiseURL = defaultAdvertiseURL(c)

@@ -113,6 +113,13 @@ func (s *Server) handleDASHManifest(w http.ResponseWriter, r *http.Request) {
 	s.registry.TouchViewer(media.StreamKey{App: app, Name: stream}, viewerClientID(r))
 
 	if variants := s.registry.GetABRGroup(app, stream); len(variants) > 0 {
+		tracks := make([]abrTrack, len(variants))
+		for i, v := range variants {
+			tracks[i] = abrTrack{app: v.Key.App, stream: v.Key.Name}
+		}
+		if !s.groupGate(w, r, tracks) {
+			return
+		}
 		params := dash.GroupManifestParams{
 			AvailabilityStart: variants[0].StartedAt,
 			SegmentDurationS:  s.cfg.DASH.SegmentDurationS,
@@ -154,6 +161,9 @@ func (s *Server) handleDASHManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.ownerGate(w, r, app, stream) {
+		return
+	}
 	path := filepath.Join(s.cfg.Server.DataDir, "dash", app, stream, "manifest.mpd")
 	data, ok := livestore.Default().ReadFile(path)
 	if !ok {
@@ -183,6 +193,9 @@ func (s *Server) handleLiveTS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "stream not found", http.StatusNotFound)
 		return
 	}
+	if !s.ownerGate(w, r, app, stream) {
+		return
+	}
 	streamObj.Viewers.Touch(viewerClientID(r))
 
 	scte35Mode := streamoutputs.ResolveSCTE35Mode(r.Context(), s.db, app, stream)
@@ -202,7 +215,7 @@ func (s *Server) handleLiveTS(w http.ResponseWriter, r *http.Request) {
 // /{app}/{stream}/ — playlist_dvr.m3u8, playlist_dvr_range-{from}-{len}.m3u8,
 // playlist_dvr_timeshift-{shift}[-{depth}].m3u8 and their manifest_dvr*.mpd
 // DASH equivalents (see dvr.ParseRequest). For an ABR group the HLS names
-// return a rewind master over its variants (abrDVRMaster). Public like every other delivery
+// return a rewind master over its variants (dvrABRTracks/renderABRDVRMaster). Public like every other delivery
 // route. Segment URIs are relative (dvr/{session}/…), served by
 // handleDVRFile.
 func (s *Server) handleDVRManifest(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +229,11 @@ func (s *Server) handleDVRManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	// ABR group rewind: a master over the variants' own recordings.
 	if !req.DASH {
-		if body, ok, found := s.abrDVRMaster(r.Context(), app, stream, file, req); found {
+		if tracks, found := s.dvrABRTracks(r.Context(), app, stream, req); found {
+			if !s.dvrGroupGate(w, r, tracks, req) {
+				return
+			}
+			body, ok := s.renderABRDVRMaster(r.Context(), tracks, file, req)
 			if !ok {
 				http.Error(w, "dvr: no variant of this ABR group has recording in the requested range", http.StatusNotFound)
 				return
@@ -227,6 +244,9 @@ func (s *Server) handleDVRManifest(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(body))
 			return
 		}
+	}
+	if !s.dvrGate(w, r, app, stream, req) {
+		return
 	}
 	s.serveDVRManifest(w, r, app, stream, req, "")
 }
@@ -245,6 +265,9 @@ func (s *Server) handleLegacyDVRPlaylist(w http.ResponseWriter, r *http.Request)
 			endMS = time.Now().UnixMilli()
 		}
 		req = dvr.Request{Kind: dvr.KindRange, FromMS: startMS, LengthS: (endMS - startMS + 999) / 1000}
+	}
+	if !s.dvrGate(w, r, app, stream, req) {
+		return
 	}
 	s.serveDVRManifest(w, r, app, stream, req, "/"+app+"/"+stream+"/")
 }
@@ -280,7 +303,7 @@ func (s *Server) handleDVRFile(w http.ResponseWriter, r *http.Request) {
 
 // handleVariantDVRManifest serves an ABR variant's rewind playlist under
 // its group, /{abrApp}/{abrStream}/{srcApp}/{srcStream}/playlist_dvr*.m3u8,
-// which is what abrDVRMaster's variant URIs resolve to (the same layout as
+// which is what renderABRDVRMaster's variant URIs resolve to (the same layout as
 // the live variant route). Its segment URIs stay relative, so they resolve
 // to handleVariantDVRFile under the same prefix.
 func (s *Server) handleVariantDVRManifest(w http.ResponseWriter, r *http.Request) {
@@ -289,7 +312,11 @@ func (s *Server) handleVariantDVRManifest(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	s.serveDVRManifest(w, r, chi.URLParam(r, "srcApp"), chi.URLParam(r, "srcStream"), req, "")
+	srcApp, srcStream := chi.URLParam(r, "srcApp"), chi.URLParam(r, "srcStream")
+	if !s.dvrGate(w, r, srcApp, srcStream, req) {
+		return
+	}
+	s.serveDVRManifest(w, r, srcApp, srcStream, req, "")
 }
 
 // handleVariantDVRFile serves /{abrApp}/{abrStream}/{srcApp}/{srcStream}/dvr/{session}/{file}.
@@ -651,7 +678,7 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 
 // handlePlaylist serves /{app}/{stream}/playlist.m3u8 — a master playlist.
 //
-// For ABR groups (manual or %i — see abrMaster): a multi-variant master.
+// For ABR groups (manual or %i — see liveABRTracks): a multi-variant master.
 //
 // For single live streams: generates a one-variant master pointing to chunks.m3u8
 // with BANDWIDTH, RESOLUTION, CODECS derived from the stream's CodecInfo.
@@ -660,7 +687,11 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	stream := chi.URLParam(r, "stream")
 
 	// ── ABR group: manual (panel/DB) first, then automatic %i ────────────────
-	if body, ok, found := s.abrMaster(r.Context(), app, stream); found {
+	if tracks, found := s.liveABRTracks(r.Context(), app, stream); found {
+		if !s.groupGate(w, r, tracks) {
+			return
+		}
+		body, ok := s.renderABRMaster(tracks)
 		if !ok {
 			http.Error(w, "all variants in this ABR group are offline", http.StatusServiceUnavailable)
 			return
@@ -673,6 +704,9 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Fall back to single live stream ──────────────────────────────────────
+	if !s.ownerGate(w, r, app, stream) {
+		return
+	}
 	streamObj := s.registry.Get(media.StreamKey{App: app, Name: stream})
 	if streamObj == nil {
 		http.Error(w, "stream not found", http.StatusNotFound)
@@ -764,6 +798,9 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 	if s.metrics != nil {
 		s.metrics.HLSPlaylistRequests.WithLabelValues(app, stream, "media").Inc()
 	}
+	if !s.ownerGate(w, r, app, stream) {
+		return
+	}
 	s.registry.TouchViewer(media.StreamKey{App: app, Name: stream}, viewerClientID(r))
 	s.awaitLLHLSUpdate(r, app, stream)
 	path := filepath.Join(s.cfg.Server.DataDir, "hls", app, stream, "index.m3u8")
@@ -801,6 +838,9 @@ func (s *Server) handleDirectSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.segmentGate(w, r, app, stream) {
+		return
+	}
 	hlsPath := filepath.Join(s.cfg.Server.DataDir, "hls", app, stream, segment)
 	if livestore.Default().Exists(hlsPath) {
 		s.serveHLSSegment(w, r, hlsPath, segment, app, stream)
@@ -821,6 +861,9 @@ func (s *Server) handleAudioChunks(w http.ResponseWriter, r *http.Request) {
 	if s.metrics != nil {
 		s.metrics.HLSPlaylistRequests.WithLabelValues(app, stream, "audio").Inc()
 	}
+	if !s.ownerGate(w, r, app, stream) {
+		return
+	}
 	s.registry.TouchViewer(media.StreamKey{App: app, Name: stream}, viewerClientID(r))
 	path := filepath.Join(s.cfg.Server.DataDir, "hls", app, stream, "audio", "index.m3u8")
 	serveM3U8(w, r, path)
@@ -836,6 +879,9 @@ func (s *Server) handleAudioSegment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
 		return
 	}
+	if !s.segmentGate(w, r, app, stream) {
+		return
+	}
 	path := filepath.Join(s.cfg.Server.DataDir, "hls", app, stream, "audio", segment)
 	s.serveHLSSegment(w, r, path, segment, app, stream)
 }
@@ -847,6 +893,9 @@ func (s *Server) handleVariantChunks(w http.ResponseWriter, r *http.Request) {
 	srcStream := chi.URLParam(r, "srcStream")
 	if s.metrics != nil {
 		s.metrics.HLSPlaylistRequests.WithLabelValues(srcApp, srcStream, "media").Inc()
+	}
+	if !s.ownerGate(w, r, srcApp, srcStream) {
+		return
 	}
 	s.registry.TouchViewer(media.StreamKey{App: srcApp, Name: srcStream}, viewerClientID(r))
 	s.awaitLLHLSUpdate(r, srcApp, srcStream)
@@ -861,6 +910,9 @@ func (s *Server) handleVariantSegment(w http.ResponseWriter, r *http.Request) {
 	segment := chi.URLParam(r, "segment")
 	if !isSafeFileName(segment) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
+		return
+	}
+	if !s.segmentGate(w, r, srcApp, srcStream) {
 		return
 	}
 	path := filepath.Join(s.cfg.Server.DataDir, "hls", srcApp, srcStream, segment)

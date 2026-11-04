@@ -2,10 +2,12 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	natstest "github.com/nats-io/nats-server/v2/test"
+	"github.com/nats-io/nats.go"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -16,6 +18,8 @@ func newTestConfig(natsURL string) *config.Config {
 	cfg := &config.Config{}
 	cfg.Multinode.NATSUrl = natsURL
 	cfg.Multinode.HeartbeatIntervalS = 1 // fast, so the test doesn't wait long
+	cfg.Multinode.PeerForgetS = 5
+	cfg.Multinode.NodePriority = 100
 	return cfg
 }
 
@@ -130,4 +134,79 @@ func TestManager_ExpiresStalePeer(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// TestUnreachablePeerKeptUntilForgotten: a peer that stops heartbeating
+// without saying goodbye is hidden from Peers but stays in DVRView as not
+// fresh, so nDVR ownership answers "unknown" instead of assuming it's
+// offline, until peer_forget_s passes.
+func TestUnreachablePeerKeptUntilForgotten(t *testing.T) {
+	cfg := newTestConfig("")
+	m := NewManager(cfg, media.NewRegistry(), metrics.New(), "http://a:8080")
+	hb := Heartbeat{NodeID: "b1", NodeName: "node-b", URL: "http://b:8080", Gen: 1, Priority: 5,
+		DVR: []DVRState{{App: "live", Stream: "cam", Publishing: true, PublishSinceMS: 1}}}
+	m.handleHeartbeat(&nats.Msg{Data: mustJSON(t, hb)})
+
+	v := m.DVRView("live", "cam")
+	if len(v) != 1 || !v[0].Fresh || !v[0].Known || !v[0].State.Publishing || v[0].Priority != 5 {
+		t.Fatalf("fresh view = %+v", v)
+	}
+	if v := m.DVRView("live", "other"); len(v) != 1 || v[0].Known {
+		t.Fatalf("unlisted stream should be known=false: %+v", v)
+	}
+
+	// Silent for longer than 3 heartbeats.
+	m.mu.Lock()
+	m.peers["b1"].LastSeen = time.Now().Add(-4 * time.Second)
+	m.mu.Unlock()
+	m.expireStalePeers(time.Duration(cfg.Multinode.PeerForgetS) * time.Second)
+	if len(m.Peers()) != 0 {
+		t.Error("silent peer should be hidden from Peers")
+	}
+	if v := m.DVRView("live", "cam"); len(v) != 1 || v[0].Fresh {
+		t.Errorf("silent peer should stay in DVRView as not fresh: %+v", v)
+	}
+
+	// Past peer_forget_s it's gone.
+	m.mu.Lock()
+	m.peers["b1"].LastSeen = time.Now().Add(-time.Duration(cfg.Multinode.PeerForgetS+1) * time.Second)
+	m.mu.Unlock()
+	m.expireStalePeers(time.Duration(cfg.Multinode.PeerForgetS) * time.Second)
+	if v := m.DVRView("live", "cam"); len(v) != 0 {
+		t.Errorf("forgotten peer still in DVRView: %+v", v)
+	}
+}
+
+// TestHeartbeatOrderingAndRestart: an older heartbeat never overwrites a
+// newer one, and a restarted peer (same name and URL, new ID) replaces its
+// old incarnation instead of leaving it to look unreachable.
+func TestHeartbeatOrderingAndRestart(t *testing.T) {
+	m := NewManager(newTestConfig(""), media.NewRegistry(), metrics.New(), "http://a:8080")
+	send := func(hb Heartbeat) { m.handleHeartbeat(&nats.Msg{Data: mustJSON(t, hb)}) }
+
+	send(Heartbeat{NodeID: "b1", NodeName: "node-b", URL: "http://b:8080", Gen: 5,
+		DVR: []DVRState{{App: "live", Stream: "cam", Publishing: true}}})
+	send(Heartbeat{NodeID: "b1", NodeName: "node-b", URL: "http://b:8080", Gen: 4})
+	if v := m.DVRView("live", "cam"); len(v) != 1 || !v[0].Known {
+		t.Fatalf("older heartbeat overwrote newer: %+v", v)
+	}
+
+	send(Heartbeat{NodeID: "b2", NodeName: "node-b", URL: "http://b:8080", Gen: 1})
+	if v := m.DVRView("live", "cam"); len(v) != 1 || v[0].NodeID != "b2" {
+		t.Fatalf("restart: want only b2, got %+v", v)
+	}
+
+	send(Heartbeat{NodeID: "b2", NodeName: "node-b", Gen: 2, Leaving: true})
+	if v := m.DVRView("live", "cam"); len(v) != 0 {
+		t.Fatalf("leaving peer still known: %+v", v)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

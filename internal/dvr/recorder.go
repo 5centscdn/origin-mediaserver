@@ -100,10 +100,16 @@ func (r *recorder) run(ctx context.Context, prev <-chan struct{}, done chan stru
 
 	writerDone := make(chan struct{})
 	go r.writer(context.WithoutCancel(ctx), writerDone)
+	if o := r.engine.observer; o != nil {
+		o.RecordingStarted(r.stream.Key)
+	}
 	defer func() {
 		close(r.jobs)
 		<-writerDone
 		close(done)
+		if o := r.engine.observer; o != nil {
+			o.RecordingStopped(r.stream.Key)
+		}
 	}()
 
 	if prev != nil {
@@ -433,6 +439,9 @@ func (r *recorder) cut(nextDTS int64) {
 			r.log.Error("DVR index segment", "err", err)
 			os.Remove(seg.Path)
 			return
+		}
+		if o := r.engine.observer; o != nil {
+			o.SegmentIndexed(key, seg.StartMS, seg.StartMS+seg.DurationMS)
 		}
 		r.engine.updateMetrics(ctx, key)
 	})

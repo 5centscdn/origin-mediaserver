@@ -22,6 +22,7 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	dbpkg "github.com/5centscdn/origin-mediaserver/internal/db"
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
+	"github.com/5centscdn/origin-mediaserver/internal/dvrowner"
 	"github.com/5centscdn/origin-mediaserver/internal/failover"
 	"github.com/5centscdn/origin-mediaserver/internal/hls"
 	"github.com/5centscdn/origin-mediaserver/internal/icecast"
@@ -112,6 +113,23 @@ func main() {
 	m := metrics.New()
 	dvrEngine := dvr.NewEngine(cfg, database, m)
 	hlsPlaylists := hls.NewPlaylistRegistry()
+
+	// ── Multi-node cluster (optional) ────────────────────────────────────────
+	// Peer discovery/health over NATS (internal/node), plus nDVR stream
+	// ownership (internal/dvrowner): which node answers an nDVR stream's
+	// playlists behind a CDN. Set up before any ingest starts so the DVR
+	// engine reports every recording to the tracker. Started further down.
+	var nodeMgr *node.Manager
+	var dvrOwner *dvrowner.Tracker
+	if cfg.Multinode.Enabled {
+		nodeMgr = node.NewManager(cfg, registry, m, cfg.Multinode.AdvertiseURL)
+		dvrOwner = dvrowner.New(nodeMgr, dvrowner.NewDeps(registry, dvrEngine,
+			func(ctx context.Context, app, stream string) bool {
+				return streamoutputs.DVREnabled(ctx, cfg, database, app, stream)
+			}), cfg.Multinode.OwnershipPolicy)
+		dvrEngine.SetObserver(dvrOwner)
+		nodeMgr.SetDVRReporter(dvrOwner.Report)
+	}
 	failoverMgr := failover.NewManager(cfg, registry, m)
 
 	// OnBackupLive: fired when a failover backup source is registered, so it
@@ -177,13 +195,8 @@ func main() {
 		streamoutputs.Start(ctx, cfg, database, dvrEngine, hlsPlaylists, stream, m)
 	}
 
-	// ── Multi-node cluster (optional) ────────────────────────────────────────
-	// Peer discovery/health only, over NATS — see internal/node. A central
-	// management console (config push, orchestration) is a separate,
-	// optional service and out of scope here.
-	var nodeMgr *node.Manager
-	if cfg.Multinode.Enabled {
-		nodeMgr = node.NewManager(cfg, registry, m, cfg.Multinode.AdvertiseURL)
+	if nodeMgr != nil {
+		go dvrOwner.Run(ctx)
 		go func() {
 			if err := nodeMgr.Run(ctx); err != nil && ctx.Err() == nil {
 				slog.Error("multinode: cluster manager stopped", "err", err)
@@ -192,6 +205,9 @@ func main() {
 	}
 
 	apiServer := api.New(ctx, cfg, database, registry, dvrEngine, failoverMgr, pullMgr, hlsPlaylists, webrtcMgr, nodeMgr, m, scte35Mgr)
+	if dvrOwner != nil {
+		apiServer.SetDVROwner(dvrOwner)
+	}
 
 	// Dashboard metrics: one goroutine sampling /proc every 5 s.
 	monCfg := sysmon.Config{

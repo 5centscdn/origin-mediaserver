@@ -132,8 +132,7 @@ func apply(
 	// an application can switch it on for its own streams, and a stream
 	// config's -1/0/1 override wins over both. The window resolves the same
 	// way, with 0 meaning "inherit".
-	outDVR := cfg.DVREnabled()
-	dvrOpts := dvr.Options{}
+	outDVR, dvrOpts := resolveDVR(cfg, appCfg, streamCfg)
 	outDVBDash := false      // DVB-DASH profile: off by default (opt-in), narrowed further below by config.toml's global master switch
 	outDVBSubs := false      // EBU-TT-D subtitles: same
 	scte35Mode := "disabled" // outputs.scte35_mode, "disabled" by default
@@ -141,9 +140,6 @@ func apply(
 	if appCfg != nil {
 		outHLS = appCfg.OutHLS
 		outDASH = appCfg.OutDASH
-		outDVR = outDVR || appCfg.DVREnabled
-		dvrOpts.WindowS = appCfg.DVRWindowS
-		dvrOpts.SegmentDurationS = appCfg.HLSSegDurationS
 		outDVBDash = appCfg.DVBDashEnabled
 		outDVBSubs = appCfg.DVBSubtitlesEnabled
 		scte35Mode = appCfg.SCTE35Mode
@@ -152,14 +148,6 @@ func apply(
 	if streamCfg != nil {
 		outHLS = db.EffectiveOut(streamCfg.OutHLS, outHLS)
 		outDASH = db.EffectiveOut(streamCfg.OutDASH, outDASH)
-		if streamCfg.DVREnabled == 1 {
-			outDVR = true
-		} else if streamCfg.DVREnabled == 0 {
-			outDVR = false
-		}
-		if streamCfg.DVRWindowS > 0 {
-			dvrOpts.WindowS = streamCfg.DVRWindowS
-		}
 		outDVBDash = db.EffectiveOut(streamCfg.DVBDashEnabled, outDVBDash)
 		outDVBSubs = db.EffectiveOut(streamCfg.DVBSubtitlesEnabled, outDVBSubs)
 		scte35Mode = db.EffectiveSCTE35Mode(streamCfg.SCTE35Mode, scte35Mode)
@@ -200,4 +188,44 @@ func apply(
 	if outDVR {
 		dvrEngine.StartRecording(ctx, stream, dvrOpts)
 	}
+}
+
+// resolveDVR works out whether a stream records nDVR, and with what
+// options: config.toml's [dvr] enabled records every stream by default; an
+// application can switch it on for its own streams, and a stream config's
+// -1/0/1 override wins over both. The window resolves the same way, with 0
+// meaning "inherit".
+func resolveDVR(cfg *config.Config, appCfg *db.AppConfig, streamCfg *db.StreamConfig) (bool, dvr.Options) {
+	on := cfg.DVREnabled()
+	var opts dvr.Options
+	if appCfg != nil {
+		on = on || appCfg.DVREnabled
+		opts.WindowS = appCfg.DVRWindowS
+		opts.SegmentDurationS = appCfg.HLSSegDurationS
+	}
+	if streamCfg != nil {
+		if streamCfg.DVREnabled == 1 {
+			on = true
+		} else if streamCfg.DVREnabled == 0 {
+			on = false
+		}
+		if streamCfg.DVRWindowS > 0 {
+			opts.WindowS = streamCfg.DVRWindowS
+		}
+	}
+	return on, opts
+}
+
+// DVREnabled reports whether app/stream records nDVR under the current
+// config, resolved exactly as when the stream publishes (two DB reads; the
+// caller caches it — see internal/dvrowner).
+func DVREnabled(ctx context.Context, cfg *config.Config, database *db.DB, app, stream string) bool {
+	var appCfg *db.AppConfig
+	var streamCfg *db.StreamConfig
+	if a, err := database.GetApplicationByName(ctx, app); err == nil && a != nil {
+		appCfg = a
+		streamCfg, _ = database.GetStreamConfig(ctx, a.ID, stream)
+	}
+	on, _ := resolveDVR(cfg, appCfg, streamCfg)
+	return on
 }

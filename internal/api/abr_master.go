@@ -28,9 +28,10 @@ type abrTrack struct {
 	label        string
 }
 
-// abrMaster renders the HLS master for /{app}/{name}/playlist.m3u8 when
-// name is an ABR group. found is false when it isn't one. A manual group
-// wins over an automatic %i group of the same name, since it was set up on
+// The live ABR master, /{app}/{name}/playlist.m3u8 when name is an ABR
+// group, is liveABRTracks then renderABRMaster (split so the nDVR
+// ownership gate can check the tracks in between). A manual group wins
+// over an automatic %i group of the same name, since it was set up on
 // purpose.
 //
 // Offline tracks are left out: a player can't tell a listed variant has no
@@ -38,24 +39,28 @@ type abrTrack struct {
 // is false and the caller answers 503 rather than an empty master that
 // looks healthy (the standalone DVR server's hls.LiveABRMaster does the
 // same, after the same incidents).
-func (s *Server) abrMaster(ctx context.Context, app, name string) (body string, ok, found bool) {
+//
+// liveABRTracks resolves group name's tracks for the live master: a manual
+// group first, then the live %i group. found is false when name isn't a
+// group.
+func (s *Server) liveABRTracks(ctx context.Context, app, name string) ([]abrTrack, bool) {
 	tracks, found := s.manualABRTracks(ctx, app, name)
 	if found {
-		tracks = s.expandPatternTracks(ctx, tracks, false)
+		return s.expandPatternTracks(ctx, tracks, false), true
 	}
-	if !found {
-		for _, st := range s.registry.GetABRGroup(app, name) {
-			tracks = append(tracks, abrTrack{
-				app: st.Key.App, stream: st.Key.Name,
-				bandwidth: st.ABRBandwidthHint, label: st.ABRLabel,
-			})
-			found = true
-		}
+	for _, st := range s.registry.GetABRGroup(app, name) {
+		tracks = append(tracks, abrTrack{
+			app: st.Key.App, stream: st.Key.Name,
+			bandwidth: st.ABRBandwidthHint, label: st.ABRLabel,
+		})
+		found = true
 	}
-	if !found {
-		return "", false, false
-	}
+	return tracks, found
+}
 
+// renderABRMaster renders the live master over tracks' live streams; ok is
+// false when none is live.
+func (s *Server) renderABRMaster(tracks []abrTrack) (string, bool) {
 	var sb strings.Builder
 	sb.WriteString("#EXTM3U\n")
 	sb.WriteString("#EXT-X-VERSION:3\n")
@@ -68,7 +73,7 @@ func (s *Server) abrMaster(ctx context.Context, app, name string) (body string, 
 		live++
 		fmt.Fprintf(&sb, "#EXT-X-STREAM-INF:%s\n%s/%s/chunks.m3u8\n", streamInf(t, st), t.app, t.stream)
 	}
-	return sb.String(), live > 0, true
+	return sb.String(), live > 0
 }
 
 // manualABRTracks loads a panel-configured group's tracks in order.

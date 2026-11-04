@@ -11,14 +11,16 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
 )
 
-// abrDVRMaster renders the nDVR rewind master for ABR group name, the
-// rewind counterpart of abrMaster: /{app}/{group}/playlist_dvr*.m3u8 lists
-// one EXT-X-STREAM-INF per variant, pointing at that variant's own nDVR
+// The nDVR rewind master for an ABR group is dvrABRTracks then
+// renderABRDVRMaster, the rewind counterpart of the live master
+// (liveABRTracks): /{app}/{group}/playlist_dvr*.m3u8 lists one
+// EXT-X-STREAM-INF per variant, pointing at that variant's own nDVR
 // playlist with the same file name under the group
 // ({srcApp}/{srcStream}/playlist_dvr*.m3u8, served by
 // handleVariantDVRManifest, the same layout as the live master), so window,
-// range and timeshift requests carry through unchanged. The DVR engine records each variant as its own
-// stream; nothing is recorded under the group name.
+// range and timeshift requests carry through unchanged. The DVR engine
+// records each variant as its own stream; nothing is recorded under the
+// group name.
 //
 // Variants come from, in order: a manual group (abr_groups; a pattern track
 // such as test%i expands to the matching recorded or live streams), the live %i
@@ -32,32 +34,36 @@ import (
 //
 // HLS only. A DASH group rewind (manifest_dvr*.mpd) would need the
 // variants merged into one MPD's adaptation set and isn't implemented.
-func (s *Server) abrDVRMaster(ctx context.Context, app, name, file string, req dvr.Request) (body string, ok, found bool) {
+//
+// dvrABRTracks resolves group name's tracks, in the order above. found is
+// false when name isn't a group.
+func (s *Server) dvrABRTracks(ctx context.Context, app, name string, req dvr.Request) ([]abrTrack, bool) {
 	tracks, found := s.manualABRTracks(ctx, app, name)
 	if found {
-		tracks = s.expandPatternTracks(ctx, tracks, true)
+		return s.expandPatternTracks(ctx, tracks, true), true
 	}
-	if !found {
-		for _, st := range s.registry.GetABRGroup(app, name) {
-			tracks = append(tracks, abrTrack{
-				app: st.Key.App, stream: st.Key.Name, label: st.ABRLabel,
-			})
-			found = true
-		}
+	for _, st := range s.registry.GetABRGroup(app, name) {
+		tracks = append(tracks, abrTrack{
+			app: st.Key.App, stream: st.Key.Name, label: st.ABRLabel,
+		})
+		found = true
 	}
-	if !found {
-		if _, err := s.dvr.VariantInfo(ctx, app, name, req); err == nil {
-			return "", false, false // a real recorded stream, not a group
-		}
-		for _, stream := range s.recordedVariants(ctx, app, name) {
-			tracks = append(tracks, abrTrack{app: app, stream: stream})
-			found = true
-		}
+	if found {
+		return tracks, true
 	}
-	if !found {
-		return "", false, false
+	if _, err := s.dvr.VariantInfo(ctx, app, name, req); err == nil {
+		return nil, false // a real recorded stream, not a group
 	}
+	for _, stream := range s.recordedVariants(ctx, app, name) {
+		tracks = append(tracks, abrTrack{app: app, stream: stream})
+		found = true
+	}
+	return tracks, found
+}
 
+// renderABRDVRMaster renders the rewind master over the tracks with
+// recording in req; ok is false when none has any.
+func (s *Server) renderABRDVRMaster(ctx context.Context, tracks []abrTrack, file string, req dvr.Request) (string, bool) {
 	var sb strings.Builder
 	sb.WriteString("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-INDEPENDENT-SEGMENTS\n")
 	listed := 0
@@ -69,7 +75,7 @@ func (s *Server) abrDVRMaster(ctx context.Context, app, name, file string, req d
 		listed++
 		fmt.Fprintf(&sb, "#EXT-X-STREAM-INF:%s\n%s/%s/%s\n", dvrStreamInf(t, v), t.app, t.stream, file)
 	}
-	return sb.String(), listed > 0, true
+	return sb.String(), listed > 0
 }
 
 // dvrStreamInf renders t's EXT-X-STREAM-INF for rewind. Panel-set values
