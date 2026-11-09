@@ -242,6 +242,17 @@ make urls          # prints example ingest/playback URLs
   BadName but keeps the connection (FMLE's other renditions stay up);
   SRT rejects with REJX_OVERLOAD, Icecast and WHIP with 403 (WHIP only
   pre-checks, so racing offers can overshoot).
+- `[rtmp] route_app` (e.g. "live", off by default) is a routing app for
+  encoders with only a stream key field (OBS): a publish to
+  rtmp://host/live with key `{app}-{stream}` (separator
+  `route_separator`) is switched onto that app at publish time
+  (`rtmp.conn.routePublish`): the longest existing app name before a
+  separator wins, then the target app's publish key, stream configs,
+  `%i` ABR and limits apply as if the encoder had connected to it. One
+  connection feeds one app. Targets with a push login are refused (Adobe
+  auth runs at connect, against the routing app). RTMP play maps
+  `live/{app}-{stream}` onto live streams (`routePlayKey`). A name with no
+  matching app falls back to a real app named like the routing app.
 - Auth is per application. RTMP puts the key in the stream name, SRT uses
   `app/stream?key`, WHIP uses `Authorization: Bearer <publish_key>`, and
   Icecast uses the Basic auth password. RTMP also supports Adobe auth

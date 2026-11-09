@@ -71,6 +71,13 @@ type conn struct {
 	// the app's push login as a player (see handleConnect).
 	playOnly string
 
+	// routing is set when the connect app is cfg.RTMP.RouteApp: publish
+	// and play names "{app}-{stream}" are mapped onto {app}/{stream}
+	// (routeTarget). routed is set once a publish has switched this
+	// connection to its target app.
+	routing bool
+	routed  bool
+
 	// Per-message-stream states (MSID → state).
 	// KEY DESIGN: this map is what makes FMLE %i work.
 	// One TCP connection → many MSIDs → many parallel publish streams.
@@ -361,7 +368,8 @@ func (c *conn) handleConnect(txID float64, vals []AMF0Value) error {
 	// Playback works for any live stream, including ones that only exist
 	// as pull sources (no publish application), so an unknown app is let
 	// in for playing only; publish on it is refused in handlePublish.
-	if !appFound {
+	c.routing = c.cfg.RTMP.RouteApp != "" && appName == c.cfg.RTMP.RouteApp
+	if !appFound && !c.routing {
 		c.playOnly = "unknown app"
 	}
 
@@ -476,6 +484,12 @@ func (c *conn) handlePublish(msid uint32, vals []AMF0Value) error {
 	}
 	if streamName == "" {
 		return fmt.Errorf("publish: empty stream name")
+	}
+	if c.routing {
+		var err error
+		if streamName, err = c.routePublish(msid, streamName); err != nil || streamName == "" {
+			return err
+		}
 	}
 	rawName := streamName
 
@@ -615,6 +629,80 @@ func (c *conn) handlePublish(msid uint32, vals []AMF0Value) error {
 
 	return c.sendStatusMessage(msid, "status", "NetStream.Publish.Start",
 		streamName+" is now published")
+}
+
+// routeTarget splits a routing-app name "{app}{sep}{stream}" (query
+// already stripped) at the separator that leaves the longest existing
+// application name before it, so "my-app-cam-1" finds app "my-app" when
+// it exists and app "my" otherwise. ok is false when no prefix names an
+// application.
+func (c *conn) routeTarget(name string) (app string, dbApp *db.AppConfig, cfgApp *config.RTMPApp, stream string, ok bool) {
+	sep := c.cfg.RTMP.RouteSeparator
+	for i := strings.LastIndex(name, sep); i > 0; i = strings.LastIndex(name[:i], sep) {
+		app, stream = name[:i], name[i+len(sep):]
+		if stream == "" || app == c.cfg.RTMP.RouteApp {
+			continue
+		}
+		if c.db != nil {
+			if a, err := c.db.GetApplicationByName(context.Background(), app); err == nil && a != nil {
+				dbApp = a
+			}
+		}
+		cfgApp = c.cfg.RTMP.AppByName(app)
+		if dbApp != nil || cfgApp != nil {
+			return app, dbApp, cfgApp, stream, true
+		}
+	}
+	return "", nil, nil, "", false
+}
+
+// routePublish maps a publish on the routing app onto its target app and
+// switches the connection to it, so every later check (publish key,
+// stream configs, ABR, limits, unpublish) runs as if the encoder had
+// connected to rtmp://host/{app}. It returns the stream name to publish
+// (query kept, for the publish key), or "" with the encoder already told
+// why when it can't be routed.
+//
+// One connection can only feed one application: FMLE-style multi-publish
+// connections route every rendition to the first publish's app.
+func (c *conn) routePublish(msid uint32, streamName string) (string, error) {
+	base, query, hasQuery := strings.Cut(streamName, "?")
+	app, dbApp, cfgApp, stream, ok := c.routeTarget(base)
+	if !ok {
+		if c.dbApp != nil || c.app != nil {
+			return streamName, nil // a real app with the routing app's name
+		}
+		_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName",
+			"No application matches stream name "+base)
+		c.log.Warn("publish refused: no application in routed name", "stream", base)
+		return "", nil
+	}
+	if dbApp != nil && !dbApp.Enabled {
+		_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName", "Application "+app+" is disabled")
+		return "", nil
+	}
+	if c.routed && app != c.appName {
+		_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName",
+			"This connection already publishes to application "+c.appName)
+		return "", nil
+	}
+	if (dbApp != nil && dbApp.PushLogin != "") || (dbApp == nil && cfgApp != nil && cfgApp.PushLogin != "") {
+		// Adobe auth happens at connect, against the routing app, so a
+		// target that requires a push login can't be reached this way.
+		_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName",
+			"Application "+app+" requires a push login: publish to rtmp://host/"+app)
+		c.log.Warn("publish refused: routed app requires push login", "target_app", app)
+		return "", nil
+	}
+	if !c.routed {
+		c.log.Info("routing publish", "name", base, "target_app", app, "stream", stream)
+		c.appName, c.dbApp, c.app, c.routed = app, dbApp, cfgApp, true
+		c.log = c.log.With("app", app)
+	}
+	if hasQuery {
+		stream += "?" + query
+	}
+	return stream, nil
 }
 
 // handleDeleteStream handles deleteStream(msid) — encoder teardown per variant.

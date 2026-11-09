@@ -85,11 +85,17 @@ type HTTPConfig struct {
 }
 
 type RTMPConfig struct {
-	Listen         string    `toml:"listen"`
-	TLSListen      string    `toml:"tls_listen"`
-	TLSEnabled     bool      `toml:"tls_enabled"`
-	IdleTimeoutMs  int       `toml:"idle_timeout_ms"`
-	MaxConnsPerApp int       `toml:"max_connections_per_app"`
+	Listen         string `toml:"listen"`
+	TLSListen      string `toml:"tls_listen"`
+	TLSEnabled     bool   `toml:"tls_enabled"`
+	IdleTimeoutMs  int    `toml:"idle_timeout_ms"`
+	MaxConnsPerApp int    `toml:"max_connections_per_app"`
+	// RouteApp is a routing app for encoders that only have a stream key
+	// field (OBS): publishing to rtmp://host/{RouteApp} with stream name
+	// "{app}{RouteSeparator}{stream}" lands on {app}/{stream}. "" = off.
+	// See rtmp.conn.routeTarget.
+	RouteApp       string    `toml:"route_app"`
+	RouteSeparator string    `toml:"route_separator"`
 	Applications   []RTMPApp `toml:"applications"`
 }
 
@@ -400,6 +406,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Auth.RefreshExpiryDays == 0 {
 		c.Auth.RefreshExpiryDays = 7
+	}
+	if c.RTMP.RouteSeparator == "" {
+		c.RTMP.RouteSeparator = "-"
 	}
 	if c.Metrics.Path == "" {
 		c.Metrics.Path = "/metrics"

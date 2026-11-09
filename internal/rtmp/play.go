@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"strings"
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -46,6 +47,9 @@ func (c *conn) handlePlay(msid uint32, vals []AMF0Value) error {
 	nameVal, _ := vals[3].(AMF0String)
 	name := stripQuery(string(nameVal))
 	key := media.StreamKey{App: c.appName, Name: name}
+	if c.routing && !c.routed && c.registry.Get(key) == nil {
+		key = c.routePlayKey(key)
+	}
 
 	ms := c.msgStreams[msid]
 	if ms == nil {
@@ -86,6 +90,22 @@ func (c *conn) handlePlay(msid uint32, vals []AMF0Value) error {
 	c.log.Info("rtmp play started", "stream", key)
 	go c.playLoop(ctx, msid, st)
 	return nil
+}
+
+// routePlayKey maps a play of "{app}-{stream}" on the routing app onto
+// the live stream it names, trying the longest app prefix first. Unlike
+// routeTarget it looks at live streams, not applications, so pull-only
+// streams (no publish application) play this way too. key is returned
+// unchanged when nothing matches.
+func (c *conn) routePlayKey(key media.StreamKey) media.StreamKey {
+	sep, name := c.cfg.RTMP.RouteSeparator, key.Name
+	for i := strings.LastIndex(name, sep); i > 0; i = strings.LastIndex(name[:i], sep) {
+		k := media.StreamKey{App: name[:i], Name: name[i+len(sep):]}
+		if k.Name != "" && c.registry.Get(k) != nil {
+			return k
+		}
+	}
+	return key
 }
 
 // stopPlay ends ms's playback, if any.
