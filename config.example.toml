@@ -44,12 +44,12 @@ idle_timeout_ms = 10000
 max_connections_per_app = 50
 
 # Routing app for encoders with only a stream key field (OBS). Publishing to
-# rtmp://host/live with stream key "news-cam1" (or "news-cam1?KEY") lands on
+# rtmp://host/cdnlive with stream key "news-cam1" (or "news-cam1?KEY") lands on
 # application "news", stream "cam1", with news's publish key, stream configs
 # and %i ABR grouping. The longest existing application name before a
 # separator wins, so app and stream names may contain the separator.
-# RTMP play of live/news-cam1 maps the same way. A name with no matching
-# application falls back to a real "live" app if there is one. Applications
+# RTMP play of cdnlive/news-cam1 maps the same way. A name with no matching
+# application falls back to a real app named like route_app, if any. Applications
 # with a push login (Adobe auth) can't be reached this way. "" = off.
 route_app       = ""
 route_separator = "-"
