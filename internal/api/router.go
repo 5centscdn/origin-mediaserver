@@ -251,6 +251,9 @@ func (s *Server) Handler() http.Handler {
 					r.Put("/applications/{id}/streams/{sid}", s.handleUpdateStreamConfig)
 					r.Delete("/applications/{id}/streams/{sid}", s.handleDeleteStreamConfig)
 				})
+				// Checks the app's DRMtoday settings (fetches keys; returns
+				// KIDs and DRM systems, never keys).
+				r.Post("/applications/{id}/drm/test", s.handleTestAppDRM)
 
 				// Node info (this node only — multi-node adds more here)
 				r.Get("/node", s.handleNodeInfo)

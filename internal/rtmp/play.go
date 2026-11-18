@@ -39,6 +39,11 @@ const (
 	playWriteTimeout = 10 * time.Second
 )
 
+// ClearPlaybackAllowed, if set, reports whether a stream may be played
+// unencrypted; DRM-protected streams can't be (wired to
+// streamoutputs.ClearPlaybackAllowed in main.go).
+var ClearPlaybackAllowed func(ctx context.Context, st *media.Stream) bool
+
 // handlePlay starts playback of app/vals[3] on msid.
 func (c *conn) handlePlay(msid uint32, vals []AMF0Value) error {
 	if len(vals) < 4 {
@@ -70,6 +75,10 @@ func (c *conn) handlePlay(msid uint32, vals []AMF0Value) error {
 	if st == nil {
 		c.log.Info("rtmp play: stream not found", "stream", key)
 		return c.sendStatusMessage(msid, "error", "NetStream.Play.StreamNotFound", "Stream not found: "+key.String())
+	}
+	if f := ClearPlaybackAllowed; f != nil && !f(c.ctx, st) {
+		c.log.Info("rtmp play refused: stream is DRM-protected", "stream", key)
+		return c.sendStatusMessage(msid, "error", "NetStream.Play.Failed", "Stream is DRM-protected: "+key.String())
 	}
 	if err := c.sendStatusMessage(msid, "status", "NetStream.Play.Reset", "Playing and resetting "+key.String()); err != nil {
 		return err

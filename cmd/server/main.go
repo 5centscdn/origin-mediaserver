@@ -114,6 +114,12 @@ func main() {
 	dvrEngine := dvr.NewEngine(cfg, database, m)
 	hlsPlaylists := hls.NewPlaylistRegistry()
 
+	// DRM (castLabs DRMtoday): keys per stream, nDVR key lookup, and the
+	// gate that keeps DRM-protected streams off unencrypted playback.
+	streamoutputs.ConfigureDRM(cfg, database, dvrEngine)
+	rtmp.ClearPlaybackAllowed = streamoutputs.ClearPlaybackAllowed
+	srt.ClearPlaybackAllowed = streamoutputs.ClearPlaybackAllowed
+
 	// ── Multi-node cluster (optional) ────────────────────────────────────────
 	// Peer discovery/health over NATS (internal/node), plus nDVR stream
 	// ownership (internal/dvrowner): which node answers an nDVR stream's

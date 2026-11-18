@@ -11,6 +11,7 @@ import (
 
 	"github.com/5centscdn/origin-mediaserver/internal/captiondecode"
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/drm"
 	"github.com/5centscdn/origin-mediaserver/internal/ebuttd"
 	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -99,7 +100,17 @@ type Packager struct {
 	// created once the real sample rate is known, in handleAudio.
 	audioClock *mux.AudioClock
 
+	// drm, when set, cbcs-encrypts video and AAC audio and signals them in
+	// the MPD (SetDRM). Audio that can't be encrypted (MP2) is left out.
+	drm *drm.KeySet
+
 	log *slog.Logger
+}
+
+// SetDRM makes the packager encrypt with ks (internal/drm). Call once,
+// before Run.
+func (p *Packager) SetDRM(ks *drm.KeySet) {
+	p.drm = ks
 }
 
 // NewPackager creates a DASH packager for the given stream. outDir is
@@ -670,9 +681,15 @@ func (p *Packager) ensureInit() error {
 	// out-of-band config — CodecInfo.SampleRate/Channels are how it signals
 	// "audio codec info is available" instead (see mergeMP2CodecInfo).
 	hasAudio := len(ci.AACConfig) > 0 || (ci.AudioCodec == media.CodecMP2 && ci.SampleRate > 0)
+	if p.drm != nil && hasAudio && len(ci.AACConfig) == 0 {
+		// cbcs here covers AAC only; never send audio in the clear.
+		p.log.Warn("DRM: audio codec can't be encrypted, leaving audio out of DASH", "codec", ci.AudioCodec)
+		hasAudio = false
+	}
 	if !hasVideo && !hasAudio {
 		return fmt.Errorf("no video or audio codec info available yet")
 	}
+	var videoKey, audioKey drm.ContentKey
 
 	if hasVideo {
 		videoTrack := &mux.FMP4Track{
@@ -683,6 +700,10 @@ func (p *Packager) ensureInit() error {
 			Height:    uint16(ci.Height),
 			SPS:       ci.SPSNALu,
 			PPS:       ci.PPSNALu,
+		}
+		if p.drm != nil {
+			videoKey = p.drm.KeysFor(ci.Width, ci.Height).Video
+			videoTrack.Encryption = p.drm.Encryption(videoKey, true)
 		}
 		p.fmp4Video = mux.NewFMP4Muxer(videoTrack)
 
@@ -705,6 +726,10 @@ func (p *Packager) ensureInit() error {
 			audioTrack.AudioObjectType = mux.MPEG1AudioObjectType
 		} else {
 			audioTrack.AACConfig = ci.AACConfig
+		}
+		if p.drm != nil {
+			audioKey = p.drm.AudioKey()
+			audioTrack.Encryption = p.drm.Encryption(audioKey, false)
 		}
 		p.fmp4Audio = mux.NewFMP4Muxer(audioTrack)
 
@@ -756,6 +781,14 @@ func (p *Packager) ensureInit() error {
 		AudioChannels:     audioChannels(ci),
 		HasText:           hasText,
 		TeletextSourced:   ci.HasDVBTeletextSubtitle,
+	}
+	if p.drm != nil {
+		if hasVideo {
+			params.VideoProtection = ProtectionFor(p.drm, videoKey.KID)
+		}
+		if hasAudio {
+			params.AudioProtection = ProtectionFor(p.drm, audioKey.KID)
+		}
 	}
 	if p.dvbProfile {
 		params.DVBProfile = true

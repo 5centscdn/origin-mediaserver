@@ -38,6 +38,8 @@ const defaultStreamForm = {
   abr_group_id: '',
   enabled: true,
   max_streams: 0,
+  drm_enabled: -1 as TriState,
+  drm_asset_id: '',
 }
 
 /**
@@ -94,6 +96,8 @@ export function StreamConfigModal({
         abr_group_id: edit.abr_group_id ?? '',
         enabled: edit.enabled,
         max_streams: edit.max_streams ?? 0,
+        drm_enabled: (edit.drm_enabled ?? -1) as TriState,
+        drm_asset_id: edit.drm_asset_id ?? '',
       })
     } else {
       setForm(defaultStreamForm)
@@ -358,6 +362,37 @@ export function StreamConfigModal({
                   value={form.dvr_window_s}
                   onChange={(e) => setForm({ ...form, dvr_window_s: Number(e.target.value) })}
                   className={inputClass}
+                />
+              </FormField>
+            )}
+          </div>
+        </FormSection>
+
+        {/* DRM */}
+        <FormSection
+          title="DRM"
+          description="castLabs DRMtoday encryption, set up on the application. A protected stream plays only as encrypted HLS, DASH and rewind."
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormField label="DRM">
+              <select
+                value={form.drm_enabled}
+                onChange={(e) => setForm({ ...form, drm_enabled: Number(e.target.value) as TriState })}
+                className={inputClass}
+              >
+                <option value={-1}>Inherit from application{parent?.drm ? (parent.drm.enabled ? ' (on)' : ' (off)') : ''}</option>
+                <option value={1}>On</option>
+                <option value={0}>Off</option>
+              </select>
+            </FormField>
+            {form.drm_enabled !== 0 && (
+              <FormField label="Asset ID" hint="DRMtoday asset; blank = the application's template">
+                <input
+                  value={form.drm_asset_id}
+                  onChange={(e) => setForm({ ...form, drm_asset_id: e.target.value })}
+                  className={inputClass + ' font-mono'}
+                  placeholder={parent?.drm?.asset_id || '{app}_{group}'}
+                  spellCheck={false}
                 />
               </FormField>
             )}

@@ -47,6 +47,7 @@ import (
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/db"
+	"github.com/5centscdn/origin-mediaserver/internal/drm"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
 )
@@ -81,6 +82,8 @@ type Engine struct {
 	writers map[media.StreamKey]chan struct{}
 
 	observer Observer // nil unless SetObserver was called
+
+	keyLookup KeyLookup // nil unless SetKeyLookup was called
 }
 
 // Options is a stream's resolved nDVR settings, from streamoutputs.
@@ -91,6 +94,26 @@ type Options struct {
 	// SegmentDurationS is the target segment length; 0 = [hls]
 	// segment_duration_s.
 	SegmentDurationS int
+	// DRM, when set, cbcs-encrypts the recording (internal/drm). Both
+	// tracks use the video key (audio key for audio-only), because HLS
+	// rewind serves each file whole, video and audio together, under one
+	// #EXT-X-KEY. DRMAssetID is stored with the session so its manifests
+	// can be signalled after the app's DRM settings change.
+	DRM        *drm.KeySet
+	DRMAssetID string
+}
+
+// KeyLookup returns the DRM keys of a recorded session's asset (cached in
+// memory by internal/drm.Provider); set by streamoutputs.ConfigureDRM.
+type KeyLookup func(ctx context.Context, app, stream, assetID string) (*drm.KeySet, error)
+
+// SetKeyLookup installs the lookup rewind manifests use for encrypted
+// sessions. Without it they fail rather than list encrypted segments
+// without key signaling.
+func (e *Engine) SetKeyLookup(f KeyLookup) {
+	e.mu.Lock()
+	e.keyLookup = f
+	e.mu.Unlock()
 }
 
 // NewEngine creates a DVR engine.

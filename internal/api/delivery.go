@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/5centscdn/origin-mediaserver/internal/dash"
+	"github.com/5centscdn/origin-mediaserver/internal/drm"
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
 	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -133,17 +134,31 @@ func (s *Server) handleDASHManifest(w http.ResponseWriter, r *http.Request) {
 				Stream:    v.Key.Name,
 				Bandwidth: v.ABRBandwidthHint,
 			}
+			// A DRM-protected variant is listed only once its keys are in
+			// hand, with the same keys its dash.Packager encrypts with.
+			var keys *drm.KeySet
+			if d := v.DRM(); d.Protected {
+				if keys, _ = d.Keys.(*drm.KeySet); keys == nil {
+					continue
+				}
+			}
 			if ci := v.Bus.CodecInfo(); ci != nil {
 				if len(ci.SPSNALu) > 0 {
 					vp.HasVideo = true
 					vp.VideoWidth, vp.VideoHeight = ci.Width, ci.Height
 					vp.VideoCodecs = media.H264CodecString(ci)
+					if keys != nil {
+						vp.VideoProtection = dash.ProtectionFor(keys, keys.VideoKey(ci.Width, ci.Height).KID)
+					}
 				}
 				if len(ci.AACConfig) > 0 {
 					vp.HasAudio = true
 					vp.AudioCodecs = media.AACCodecString(ci)
 					vp.AudioSampleRate = mux.ParseAACSampleRate(ci.AACConfig)
 					vp.AudioChannels = mux.ParseAACChannels(ci.AACConfig)
+					if keys != nil {
+						vp.AudioProtection = dash.ProtectionFor(keys, keys.AudioKey().KID)
+					}
 				}
 			}
 			params.Variants = append(params.Variants, vp)
@@ -194,6 +209,10 @@ func (s *Server) handleLiveTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.ownerGate(w, r, app, stream) {
+		return
+	}
+	if !streamoutputs.ClearPlaybackAllowed(r.Context(), streamObj) {
+		http.Error(w, "stream is DRM-protected; MPEG-TS output is unencrypted", http.StatusForbidden)
 		return
 	}
 	streamObj.Viewers.Touch(viewerClientID(r))
@@ -443,6 +462,11 @@ func (s *Server) handleWHEP(w http.ResponseWriter, r *http.Request) {
 
 	app := chi.URLParam(r, "app")
 	streamName := chi.URLParam(r, "stream")
+
+	if st := s.registry.Get(media.StreamKey{App: app, Name: streamName}); !streamoutputs.ClearPlaybackAllowed(r.Context(), st) {
+		http.Error(w, "stream is DRM-protected; WHEP playback is unencrypted", http.StatusForbidden)
+		return
+	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -720,10 +744,18 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	streamObj.Viewers.Touch(viewerClientID(r))
 
+	// A DRM-protected stream has no segments until its keys arrive.
+	drmState := streamObj.DRM()
+	if drmState.Protected && len(drmState.HLSMasterLines) == 0 {
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, "stream is waiting for DRM keys", http.StatusServiceUnavailable)
+		return
+	}
+
 	ci := streamObj.Bus.CodecInfo()
 	var sb strings.Builder
 	sb.WriteString("#EXTM3U\n")
-	sb.WriteString("#EXT-X-VERSION:3\n")
+	sb.WriteString(masterHeader(drmState.HLSMasterLines))
 
 	// hls.separate_audio_track mode (see internal/hls.Packager.useSplitAudio,
 	// same gating condition): link the audio-only playlist into the master
@@ -774,7 +806,7 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 				attrs += fmt.Sprintf(",FRAME-RATE=%.3f", ci.FrameRate)
 			}
 			codecs := videoCodecString(ci)
-			if media.TSAudioCodec(ci.AudioCodec) {
+			if hlsCarriesAudio(streamObj, ci) {
 				codecs += "," + media.AudioCodecString(ci)
 			}
 			attrs += fmt.Sprintf(",RESOLUTION=%dx%d,CODECS=%q", ci.Width, ci.Height, codecs)

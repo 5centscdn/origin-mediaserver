@@ -206,7 +206,7 @@ func TestRecorder_SessionsTimelineAndManifests(t *testing.T) {
 	}
 
 	// A range entirely in the past is VOD.
-	vod := renderHLS(segs, hlsVOD, "/live/cam/", 2)
+	vod := renderHLS(segs, hlsVOD, "/live/cam/", 2, nil)
 	if !strings.Contains(vod, "#EXT-X-PLAYLIST-TYPE:VOD") || !strings.HasSuffix(vod, "#EXT-X-ENDLIST\n") ||
 		!strings.Contains(vod, "/live/cam/dvr/") {
 		t.Errorf("VOD playlist wrong:\n%s", vod)

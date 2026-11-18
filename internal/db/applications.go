@@ -31,6 +31,15 @@ type AppConfig struct {
 	SCTE35Mode          string // "disabled"|"passthrough"|"insert"|"hybrid"
 	DVREnabled          bool   // nDVR recording + rewind playback (internal/dvr)
 	DVRWindowS          int    // rewind window; 0 = config.toml's [dvr] window_seconds
+
+	// castLabs DRMtoday (schema v17, internal/drm).
+	DRMEnabled      bool
+	DRMStaging      bool
+	DRMUser         string
+	DRMPassword     string
+	DRMMerchantUUID string
+	DRMCPIXConfigID string
+	DRMAssetID      string // template: {app} {stream} {group}; "" = "{app}_{group}"
 }
 
 // StreamConfig is the runtime view of a stream_configs row.
@@ -53,19 +62,23 @@ type StreamConfig struct {
 	SCTE35Passthrough   int    // superseded by SCTE35Mode — kept for read compatibility, no longer authoritative
 	AdMarkerFormat      string // "" = inherit from app; else none|cue|splicepoint|daterange
 	SCTE35Mode          string // "" = inherit from app; else disabled|passthrough|insert|hybrid
+	DRMEnabled          int    // -1 inherit, 0 off, 1 on
+	DRMAssetID          string // "" = inherit the app's template
 }
 
 // GetApplicationByName returns the app config for the given name, or nil if not found.
 func (db *DB) GetApplicationByName(ctx context.Context, name string) (*AppConfig, error) {
 	var a AppConfig
-	var enabled, allowAny, outHLS, outDASH, outMpegTS, outLLHLS, dvbDash, dvbSubs, scte35Passthrough, dvrEnabled int
+	var enabled, allowAny, outHLS, outDASH, outMpegTS, outLLHLS, dvbDash, dvbSubs, scte35Passthrough, dvrEnabled, drmEnabled, drmStaging int
 	err := db.QueryRowContext(ctx, `
 		SELECT id, name, publish_key, enabled, allow_any_stream,
 		       out_hls, out_dash, out_mpegts, out_ll_hls,
 		       dvb_dash_enabled, dvb_subtitles_enabled,
 		       hls_seg_duration_s, hls_playlist_window,
 		       scte35_passthrough, ad_marker_format, scte35_mode,
-		       dvr_enabled, dvr_window_s, push_login, push_password
+		       dvr_enabled, dvr_window_s, push_login, push_password,
+		       drm_enabled, drm_staging, drm_user, drm_password,
+		       drm_merchant_uuid, drm_cpix_config_id, drm_asset_id
 		FROM applications WHERE name = ?`, name,
 	).Scan(
 		&a.ID, &a.Name, &a.PublishKey,
@@ -75,6 +88,8 @@ func (db *DB) GetApplicationByName(ctx context.Context, name string) (*AppConfig
 		&a.HLSSegDurationS, &a.HLSPlaylistWindow,
 		&scte35Passthrough, &a.AdMarkerFormat, &a.SCTE35Mode,
 		&dvrEnabled, &a.DVRWindowS, &a.PushLogin, &a.PushPassword,
+		&drmEnabled, &drmStaging, &a.DRMUser, &a.DRMPassword,
+		&a.DRMMerchantUUID, &a.DRMCPIXConfigID, &a.DRMAssetID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -92,6 +107,8 @@ func (db *DB) GetApplicationByName(ctx context.Context, name string) (*AppConfig
 	a.DVBSubtitlesEnabled = dvbSubs == 1
 	a.SCTE35Passthrough = scte35Passthrough == 1
 	a.DVREnabled = dvrEnabled == 1
+	a.DRMEnabled = drmEnabled == 1
+	a.DRMStaging = drmStaging == 1
 	return &a, nil
 }
 
@@ -103,7 +120,8 @@ func (db *DB) GetStreamConfig(ctx context.Context, appID, streamName string) (*S
 		       out_hls, out_dash, out_mpegts, out_ll_hls,
 		       dvb_dash_enabled, dvb_subtitles_enabled,
 		       dvr_enabled, dvr_window_s, COALESCE(abr_group_id,''), enabled,
-		       scte35_passthrough, ad_marker_format, scte35_mode
+		       scte35_passthrough, ad_marker_format, scte35_mode,
+		       drm_enabled, drm_asset_id
 		FROM stream_configs
 		WHERE app_id = ? AND enabled = 1
 		ORDER BY is_wildcard ASC, created_at ASC`, appID)
@@ -122,6 +140,7 @@ func (db *DB) GetStreamConfig(ctx context.Context, appID, streamName string) (*S
 			&sc.DVBDashEnabled, &sc.DVBSubtitlesEnabled,
 			&sc.DVREnabled, &sc.DVRWindowS, &sc.ABRGroupID, &enabled,
 			&sc.SCTE35Passthrough, &sc.AdMarkerFormat, &sc.SCTE35Mode,
+			&sc.DRMEnabled, &sc.DRMAssetID,
 		); err != nil {
 			continue
 		}

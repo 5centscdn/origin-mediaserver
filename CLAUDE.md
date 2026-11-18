@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Origin Media Server
 
 A live-streaming origin server written in Go that ships as one binary
@@ -16,8 +20,16 @@ make run           # build + ./origin-mediaserver --config config.toml
 make test          # go test ./...
 make panel         # Next.js panel dev server on :3000 (proxies API to :8080)
 make panel-build   # builds panel/out/, which panel/panelfs.go embeds
-make urls          # prints example ingest/playback URLs
+make urls          # prints example URLs (stale paths: see "URLs and ports" below)
+
+go test ./internal/media/ -run 'TestRetimer_' -v   # one package / one test
+go vet ./...
+cd panel && npx tsc --noEmit                        # panel type-check (no lint script)
 ```
+
+- Go version comes from `go.mod` (`go 1.26.0`; README still says 1.25+).
+- First login: bootstrap admin from `config.toml` (`admin@localhost` /
+  `admin` by default).
 
 - Never require CGO. The muxers are pure Go, SQLite is `modernc.org/sqlite`
   and SRT is `datarhei/gosrt`.
@@ -25,6 +37,19 @@ make urls          # prints example ingest/playback URLs
   before `go build`. Run `make panel-build` after changing the panel.
 - Config is TOML. `config.example.toml` is the documented reference; keep it
   up to date whenever a config field is added or changed.
+
+## URLs and ports
+
+Ports: HTTP 8080 (playback, WHIP/WHEP, API, panel, `/metrics`), RTMP 1935,
+RTMPS 1936, SRT 4000/udp, Icecast 8005, MPEG-TS 5000/udp.
+
+Playback is rooted at `/{app}/{stream}/` (no `/hls` or `/dash` prefix):
+`playlist.m3u8` (master, single stream or ABR group), `chunks.m3u8` (media
+playlist), `manifest.mpd`, `mpeg.2ts`, and the nDVR names listed under
+`dvr` below. WHIP/WHEP are `POST /whip|whep/{app}/{stream}`. The `/hls/...`
+and `/dash/...` paths that `make urls` prints were removed. The legacy
+`/dvr/{app}/{stream}/index.m3u8?start=&end=` is kept for old links only, and
+its sub-router falls through to the panel's own `/dvr` page.
 
 ## Layout
 
@@ -157,6 +182,20 @@ make urls          # prints example ingest/playback URLs
     the range;
   - recorded DVR files → never gated (immutable, named by session);
   - ABR masters → combine their variants' decisions (`dvrowner.Combine`).
+- `drm`: castLabs DRMtoday keys, as Nimble's `type = drmtoday`. CAS
+  login (TGT cached, one fresh login on rejection), a service ticket per
+  request, then the CPIX ingest API with `x-signaling-alg=cbcs`. The CPIX
+  2.3 response gives keys, PSSH boxes, DASH ContentProtection data and HLS
+  key tags for Widevine/PlayReady/FairPlay; that signaling is used
+  verbatim, never hand-built. DRMtoday returns the same keys for an asset
+  every time, so keys live only in memory (`drm.Provider`, one request per
+  asset even when ABR renditions start together) and every origin encrypts
+  identically. Settings are per application (schema v17: account, merchant
+  UUID, CPIX config, asset ID template `{app}_{group}`) with a per-stream
+  on/off and asset override; `[drm]` in config.toml only sets the timeout
+  and endpoint overrides. `POST /applications/{id}/drm/test` checks them.
+  Encryption is `mux/cbcs.go` (below); the per-stream wiring is
+  `streamoutputs/drm.go`.
 - `metrics`: Prometheus.
 - `sysmon`: dashboard monitoring. One goroutine samples `/proc` and statfs
   every 5 s (CPU, memory, disks, host NIC throughput, established
@@ -233,6 +272,26 @@ make urls          # prints example ingest/playback URLs
   `#EXT-X-DISCONTINUITY` (`hls.Packager.tsJump`). Without it the
   duration-based cut never fired and the playlist went stale. fMP4/CMAF
   and DASH don't handle this yet.
+- DRM (cbcs only) fails closed. `streamoutputs.apply` marks the stream
+  `Protected` (`media.DRMState`) before anything starts, fetches its keys
+  (retrying with backoff, error shown on the stream), and only then starts
+  HLS/DASH/DVR, encrypted. The clear outputs (`/mpeg.2ts`, RTMP and SRT
+  playback, WHEP) check `streamoutputs.ClearPlaybackAllowed` and refuse.
+  HLS is forced to fMP4 for a protected stream. A combined audio+video
+  segment (HLS, nDVR) uses the video key for both tracks so one
+  `#EXT-X-KEY` set covers it; DASH and split-audio HLS use DRMtoday's
+  audio key. Audio cbcs can't carry (MP2/MP3) is dropped, never sent
+  clear; HEVC is refused by the muxer. In `mux/cbcs.go`, video keeps the
+  NAL and slice header clear (`media.H264ParamSets.SliceHeaderSize`,
+  checked on real x264 CABAC output via the alignment bits) and encrypts
+  the rest 1:9; a slice whose header can't be parsed is still encrypted
+  after a 32-byte clear leader. The muxer gets the parser through an
+  interface because `mux` can't import `media` (media → scte35 → mux).
+  nDVR sessions store their asset and KID (`dvr_sessions.drm_*`), so
+  rewind playlists keep the right key tags after the app's settings
+  change.
+- The SQLite pool has one connection (`SetMaxOpenConns(1)`): never run a
+  second query while a `rows` is still open, or the handler hangs.
 - A wildcard stream config (`cam_%i`, `cam_*`) can cap how many matching
   streams publish at once (`stream_configs.max_streams`, schema v16, 0 =
   no limit; panel "Max publishing streams"). `db.PublishLimits` returns
@@ -242,6 +301,15 @@ make urls          # prints example ingest/playback URLs
   BadName but keeps the connection (FMLE's other renditions stay up);
   SRT rejects with REJX_OVERLOAD, Icecast and WHIP with 403 (WHIP only
   pre-checks, so racing offers can overshoot).
+- `[rtmp] max_connections_per_app` caps publishing connections per app
+  (`rtmp.Server.acquireIngest`): a connection takes a slot at its first
+  publish and gives it back when its last stream unpublishes, so FMLE's
+  `%i` renditions on one connection count once. The RTMP/RTMPS handshake
+  runs under a deadline (the idle timeout, or 10 s), so a client that
+  never finishes it can't hold a goroutine forever.
+- RTMP chunk timestamps: a Type-3 chunk that starts a new message adds
+  the last Type-1/2 delta; a Type-0 resets the delta to 0
+  (`rtmp/chunk.go`, as yutopp/go-rtmp does).
 - `[rtmp] route_app` (e.g. "cdnlive", off by default) is a routing app for
   encoders with only a stream key field (OBS): a publish to
   rtmp://host/cdnlive with key `{app}-{stream}` (separator
@@ -313,6 +381,17 @@ make urls          # prints example ingest/playback URLs
   nominal AAC frame durations (`fmp4AudioBaseDT`), so a source that drops
   audio drifts A/V there over hours.
 - Legacy SHOUTcast v1 (no password) Icecast handshakes are not supported.
+- DRM: cbcs only (no `cenc`, so PlayReady before 4.0 can't play), no key
+  rotation, no encrypted (DocumentKey) CPIX, H.264 + AAC only, no SCTE-35
+  HLS markers on protected streams (they need the TS container). Changing
+  an application's DRM settings applies to live streams on their next
+  reconnect or a stream reload, like other app settings. Verified
+  2026-11-17 against DRMtoday staging (CPIX config with stream type
+  mapping "1 key without filter – VIDEO_AUDIO"; the generator API returns
+  412 when the mapping is None): Widevine DASH plays in Chrome via
+  Shaka Player (`tools/drm-test-player.html`, Test dummy authorization,
+  x-dt-custom-data userId=purchase, sessionId=default, merchant=5centscdn).
+  PlayReady and FairPlay playback not yet tested.
 - Failover backups are `rtmp` or `mp4` only. The panel lists rtsp/srt/hls
   as "not supported yet" (rules with them never fail over). `mp4` backups
   don't support fragmented MP4 or HEVC.

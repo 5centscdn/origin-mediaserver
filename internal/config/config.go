@@ -25,6 +25,7 @@ type Config struct {
 	Metrics   MetricsConfig   `toml:"metrics"`
 	LiveCache LiveCacheConfig `toml:"live_cache"`
 	Multinode MultinodeConfig `toml:"multinode"`
+	DRM       DRMConfig       `toml:"drm"`
 
 	// dvrMu guards DVR.Enabled and DVR.WindowSeconds, the only DVR fields
 	// mutable at runtime (via the panel's DVR settings page). DVR.StoragePath
@@ -266,6 +267,19 @@ type LiveCacheConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `toml:"enabled"`
 	Path    string `toml:"path"`
+}
+
+// DRMConfig holds server-wide castLabs DRMtoday settings. The account,
+// merchant, CPIX config and asset ID are per application (panel → Applications
+// → DRM); these only tune how the server reaches DRMtoday.
+type DRMConfig struct {
+	// RequestTimeoutS bounds each DRMtoday request (default 15).
+	RequestTimeoutS int `toml:"request_timeout_s"`
+	// DRMtodayAuthURL / DRMtodayFEURL override the CAS ticket URL and the
+	// frontend base URL (e.g. through a proxy). Empty = DRMtoday's own,
+	// production or staging per application.
+	DRMtodayAuthURL string `toml:"drmtoday_auth_url"`
+	DRMtodayFEURL   string `toml:"drmtoday_fe_url"`
 }
 
 type MultinodeConfig struct {

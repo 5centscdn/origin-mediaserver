@@ -12,6 +12,9 @@ import (
 // ─── Applications ─────────────────────────────────────────────────────────────
 
 func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) {
+	// Before the main query: the DB has one connection, so a second query
+	// while rows is open would wait forever.
+	drmByID := s.loadAppDRM(r.Context())
 	rows, err := s.db.QueryContext(r.Context(), `
 		SELECT id, name, publish_key, enabled, allow_any_stream,
 		       out_hls, out_dash, out_mpegts, out_ll_hls,
@@ -50,6 +53,7 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 			"scte35_mode": scte35Mode,
 			"dvr_enabled": dvrEnabled == 1, "dvr_window_s": dvrWin,
 			"push_login": pushLogin, "has_push_password": hasPushPassword,
+			"drm":        drmByID[id],
 			"created_at": createdAt, "updated_at": updatedAt,
 		})
 	}
@@ -62,25 +66,26 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleCreateApplication(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name                string `json:"name"`
-		PublishKey          string `json:"publish_key"`
-		Enabled             *bool  `json:"enabled"`
-		AllowAnyStream      *bool  `json:"allow_any_stream"`
-		OutHLS              *bool  `json:"out_hls"`
-		OutDASH             *bool  `json:"out_dash"`
-		OutMpegTS           *bool  `json:"out_mpegts"`
-		OutLLHLS            *bool  `json:"out_ll_hls"`
-		DVBDashEnabled      *bool  `json:"dvb_dash_enabled"`
-		DVBSubtitlesEnabled *bool  `json:"dvb_subtitles_enabled"`
-		HLSSegDurationS     int    `json:"hls_seg_duration_s"`
-		HLSPlaylistWindow   int    `json:"hls_playlist_window"`
-		SCTE35Passthrough   *bool  `json:"scte35_passthrough"`
-		AdMarkerFormat      string `json:"ad_marker_format"`
-		SCTE35Mode          string `json:"scte35_mode"`
-		DVREnabled          *bool  `json:"dvr_enabled"`
-		DVRWindowS          int    `json:"dvr_window_s"`
-		PushLogin           string `json:"push_login"`
-		PushPassword        string `json:"push_password"`
+		Name                string        `json:"name"`
+		PublishKey          string        `json:"publish_key"`
+		Enabled             *bool         `json:"enabled"`
+		AllowAnyStream      *bool         `json:"allow_any_stream"`
+		OutHLS              *bool         `json:"out_hls"`
+		OutDASH             *bool         `json:"out_dash"`
+		OutMpegTS           *bool         `json:"out_mpegts"`
+		OutLLHLS            *bool         `json:"out_ll_hls"`
+		DVBDashEnabled      *bool         `json:"dvb_dash_enabled"`
+		DVBSubtitlesEnabled *bool         `json:"dvb_subtitles_enabled"`
+		HLSSegDurationS     int           `json:"hls_seg_duration_s"`
+		HLSPlaylistWindow   int           `json:"hls_playlist_window"`
+		SCTE35Passthrough   *bool         `json:"scte35_passthrough"`
+		AdMarkerFormat      string        `json:"ad_marker_format"`
+		SCTE35Mode          string        `json:"scte35_mode"`
+		DVREnabled          *bool         `json:"dvr_enabled"`
+		DVRWindowS          int           `json:"dvr_window_s"`
+		PushLogin           string        `json:"push_login"`
+		PushPassword        string        `json:"push_password"`
+		DRM                 *appDRMUpdate `json:"drm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
@@ -135,6 +140,12 @@ func (s *Server) handleCreateApplication(w http.ResponseWriter, r *http.Request)
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := s.applyAppDRM(r.Context(), id, req.DRM); err != nil {
+		// Don't leave an app behind whose DRM the caller thinks is on.
+		s.db.ExecContext(r.Context(), `DELETE FROM applications WHERE id = ?`, id)
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	var createdAt, updatedAt string
 	s.db.QueryRowContext(r.Context(),
 		`SELECT created_at, updated_at FROM applications WHERE id = ?`, id,
@@ -151,6 +162,7 @@ func (s *Server) handleCreateApplication(w http.ResponseWriter, r *http.Request)
 		"scte35_mode": scte35Mode,
 		"dvr_enabled": dvrEnabled == 1, "dvr_window_s": req.DVRWindowS,
 		"push_login": req.PushLogin, "has_push_password": req.PushPassword != "",
+		"drm":        s.loadAppDRM(r.Context())[id],
 		"created_at": createdAt, "updated_at": updatedAt,
 	})
 	w.Header().Set("Content-Type", "application/json")
@@ -191,6 +203,7 @@ func (s *Server) handleGetApplication(w http.ResponseWriter, r *http.Request) {
 		"scte35_mode": scte35Mode,
 		"dvr_enabled": dvrEnabled == 1, "dvr_window_s": dvrWin,
 		"push_login": pushLogin, "has_push_password": hasPushPassword,
+		"drm":        s.loadAppDRM(r.Context())[id],
 		"created_at": createdAt, "updated_at": updatedAt,
 	})
 	jsonOK(w, data)
@@ -218,8 +231,9 @@ func (s *Server) handleUpdateApplication(w http.ResponseWriter, r *http.Request)
 		DVRWindowS          int    `json:"dvr_window_s"`
 		// nil leaves the stored value unchanged, so a client that never
 		// shows the password (it is never returned) doesn't wipe it.
-		PushLogin    *string `json:"push_login"`
-		PushPassword *string `json:"push_password"`
+		PushLogin    *string       `json:"push_login"`
+		PushPassword *string       `json:"push_password"`
+		DRM          *appDRMUpdate `json:"drm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
@@ -253,6 +267,12 @@ func (s *Server) handleUpdateApplication(w http.ResponseWriter, r *http.Request)
 		scte35Mode = "disabled"
 	}
 
+	// DRM first: it validates (enabling needs a full DRMtoday account), and
+	// a rejected request should change nothing.
+	if err := s.applyAppDRM(r.Context(), id, req.DRM); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if req.PushLogin != nil {
 		if _, err := s.db.ExecContext(r.Context(),
 			`UPDATE applications SET push_login=? WHERE id=?`, *req.PushLogin, id); err != nil {
@@ -307,7 +327,8 @@ func (s *Server) handleListStreamConfigs(w http.ResponseWriter, r *http.Request)
 		       out_hls, out_dash, out_mpegts, out_ll_hls,
 		       dvb_dash_enabled, dvb_subtitles_enabled,
 		       dvr_enabled, dvr_window_s, COALESCE(abr_group_id,''), enabled,
-		       scte35_passthrough, ad_marker_format, scte35_mode, max_streams, created_at
+		       scte35_passthrough, ad_marker_format, scte35_mode, max_streams,
+		       drm_enabled, drm_asset_id, created_at
 		FROM stream_configs WHERE app_id = ? ORDER BY name_pattern`, appID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -317,13 +338,14 @@ func (s *Server) handleListStreamConfigs(w http.ResponseWriter, r *http.Request)
 
 	var list []map[string]interface{}
 	for rows.Next() {
-		var id, appIDVal, pattern, abrGroup, adMarkerFormat, scte35Mode, createdAt string
-		var isWild, outHLS, outDASH, outMpegTS, outLLHLS, dvbDash, dvbSubs, dvrEnabled, dvrWin, enabled, scte35Passthrough, maxStreams int
+		var id, appIDVal, pattern, abrGroup, adMarkerFormat, scte35Mode, drmAssetID, createdAt string
+		var isWild, outHLS, outDASH, outMpegTS, outLLHLS, dvbDash, dvbSubs, dvrEnabled, dvrWin, enabled, scte35Passthrough, maxStreams, drmEnabled int
 		if err := rows.Scan(&id, &appIDVal, &pattern, &isWild,
 			&outHLS, &outDASH, &outMpegTS, &outLLHLS,
 			&dvbDash, &dvbSubs,
 			&dvrEnabled, &dvrWin, &abrGroup, &enabled,
-			&scte35Passthrough, &adMarkerFormat, &scte35Mode, &maxStreams, &createdAt); err != nil {
+			&scte35Passthrough, &adMarkerFormat, &scte35Mode, &maxStreams,
+			&drmEnabled, &drmAssetID, &createdAt); err != nil {
 			continue
 		}
 		list = append(list, map[string]interface{}{
@@ -336,7 +358,8 @@ func (s *Server) handleListStreamConfigs(w http.ResponseWriter, r *http.Request)
 			"abr_group_id": abrGroup, "enabled": enabled == 1,
 			"scte35_passthrough": scte35Passthrough, "ad_marker_format": adMarkerFormat,
 			"scte35_mode": scte35Mode, "max_streams": maxStreams,
-			"created_at":  createdAt,
+			"drm_enabled": drmEnabled, "drm_asset_id": drmAssetID,
+			"created_at": createdAt,
 		})
 	}
 	if list == nil {
@@ -369,6 +392,8 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 		// MaxStreams caps concurrent publishes matching a wildcard
 		// pattern (0 = no limit). Ignored for exact names.
 		MaxStreams int `json:"max_streams"`
+
+		streamConfigDRM
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
@@ -433,6 +458,10 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := s.applyStreamConfigDRM(r.Context(), id, req.streamConfigDRM); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	var createdAt string
 	s.db.QueryRowContext(r.Context(),
 		`SELECT created_at FROM stream_configs WHERE id = ?`, id,
@@ -448,7 +477,8 @@ func (s *Server) handleCreateStreamConfig(w http.ResponseWriter, r *http.Request
 		"abr_group_id": req.ABRGroupID, "enabled": enabled == 1,
 		"scte35_passthrough": scte35Passthrough, "ad_marker_format": req.AdMarkerFormat,
 		"scte35_mode": req.SCTE35Mode, "max_streams": maxStreams,
-		"created_at":  createdAt,
+		"drm_enabled": intPtrVal(req.DRMEnabled, -1), "drm_asset_id": strPtrVal(req.DRMAssetID),
+		"created_at": createdAt,
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -479,6 +509,8 @@ func (s *Server) handleUpdateStreamConfig(w http.ResponseWriter, r *http.Request
 		// MaxStreams caps concurrent publishes matching a wildcard
 		// pattern (0 = no limit). Ignored for exact names.
 		MaxStreams int `json:"max_streams"`
+
+		streamConfigDRM
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON")
@@ -530,6 +562,10 @@ func (s *Server) handleUpdateStreamConfig(w http.ResponseWriter, r *http.Request
 	)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.applyStreamConfigDRM(r.Context(), sid, req.streamConfigDRM); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

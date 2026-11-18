@@ -69,6 +69,43 @@ type Stream struct {
 	// (HLS/DASH packagers, DVR recording) — NOT the stream's ingest
 	// connection or its registry entry. Replaced on every Start/Reload.
 	outputsCancel context.CancelFunc
+
+	// drm is the stream's DRM state, set by streamoutputs before any output
+	// starts (guarded by outputsMu).
+	drm DRMState
+}
+
+// DRMState is a stream's DRM status (internal/drm, internal/streamoutputs).
+// While Protected, only encrypted outputs (HLS fMP4, DASH, nDVR) may serve
+// the stream: clear outputs (MPEG-TS over HTTP, RTMP/SRT playback, WHEP)
+// refuse it.
+type DRMState struct {
+	Protected bool
+	AssetID   string
+	// HLSMasterLines are the #EXT-X-SESSION-KEY lines for the keys the
+	// stream's outputs use; empty until the keys are fetched.
+	HLSMasterLines []string
+	// Error is the last key-fetch failure ("" once keys are in hand);
+	// outputs stay off while it's set.
+	Error string
+	// Keys is the stream's *drm.KeySet once fetched (any: drm imports
+	// media), for delivery paths that render key signaling per request
+	// (the DASH ABR group MPD).
+	Keys any
+}
+
+// SetDRM records the stream's DRM state.
+func (s *Stream) SetDRM(st DRMState) {
+	s.outputsMu.Lock()
+	s.drm = st
+	s.outputsMu.Unlock()
+}
+
+// DRM returns the stream's DRM state.
+func (s *Stream) DRM() DRMState {
+	s.outputsMu.Lock()
+	defer s.outputsMu.Unlock()
+	return s.drm
 }
 
 // SetLifetimeCtx records ctx as this stream's overall output-pipeline

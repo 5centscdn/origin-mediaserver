@@ -307,6 +307,23 @@ memory_low_pct   = 80
 check_interval_s = 5
 
 # ─────────────────────────────────────────────────────────────
+# DRM (castLabs DRMtoday)
+# ─────────────────────────────────────────────────────────────
+# DRM is set up per application in the panel (Applications → Edit → DRM):
+# DRMtoday API user/password, merchant UUID, CPIX ingest config ID and the
+# asset ID ({app}_{group} by default). A protected stream is cbcs-encrypted
+# for Widevine, PlayReady and FairPlay on HLS (forced to fMP4), LL-HLS, DASH
+# and nDVR; its clear outputs (MPEG-TS over HTTP, RTMP/SRT playback, WHEP)
+# are refused. Nothing is served until DRMtoday has returned the keys.
+# This section only tunes how the server reaches DRMtoday.
+[drm]
+request_timeout_s = 15
+# Override DRMtoday's endpoints (e.g. via a proxy). Empty = DRMtoday's own,
+# production or staging per application.
+# drmtoday_auth_url = "https://auth.drmtoday.com/cas/v1/tickets"
+# drmtoday_fe_url   = "https://fe.drmtoday.com"
+
+# ─────────────────────────────────────────────────────────────
 # Metrics
 # ─────────────────────────────────────────────────────────────
 [metrics]

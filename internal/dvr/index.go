@@ -3,6 +3,8 @@ package dvr
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/5centscdn/origin-mediaserver/internal/dash"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 )
 
@@ -38,6 +41,10 @@ func (e *Engine) Manifest(ctx context.Context, app, stream string, req Request, 
 	if err != nil {
 		return "", "", err
 	}
+	keys, err := e.sessionKeys(ctx, app, stream, sessions)
+	if err != nil {
+		return "", "", err
+	}
 
 	if req.DASH {
 		opts := mpdOptions{
@@ -48,6 +55,7 @@ func (e *Engine) Manifest(ctx context.Context, app, stream string, req Request, 
 			DepthS:   depthS,
 			Dynamic:  req.Kind != KindRange,
 			Sessions: sessions,
+			Keys:     keys,
 		}
 		return renderMPD(segs, opts), "application/dash+xml", nil
 	}
@@ -59,7 +67,7 @@ func (e *Engine) Manifest(ctx context.Context, app, stream string, req Request, 
 			kind = hlsVOD
 		}
 	}
-	return renderHLS(segs, kind, uriPrefix, segDurS), "application/vnd.apple.mpegurl", nil
+	return renderHLS(segs, kind, uriPrefix, segDurS, keys), "application/vnd.apple.mpegurl", nil
 }
 
 // selection is the time range a Request resolved to.
@@ -256,7 +264,7 @@ func (e *Engine) sessionsFor(ctx context.Context, key media.StreamKey, segs []se
 	}
 	rows, err := e.database.QueryContext(ctx, `
 		SELECT session_ms, dir_path, has_video, has_audio, video_codecs, audio_codecs,
-		       width, height, sample_rate, channels
+		       width, height, sample_rate, channels, drm_asset_id, drm_kid
 		FROM dvr_sessions
 		WHERE app_name = ? AND stream_name = ? AND session_ms IN (`+
 		strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)`, args...)
@@ -269,11 +277,68 @@ func (e *Engine) sessionsFor(ctx context.Context, key media.StreamKey, segs []se
 		var s sessionRow
 		var hv, ha sql.NullInt64
 		if err := rows.Scan(&s.SessionMS, &s.Dir, &hv, &ha, &s.VideoCodecs, &s.AudioCodecs,
-			&s.Width, &s.Height, &s.SampleRate, &s.Channels); err != nil {
+			&s.Width, &s.Height, &s.SampleRate, &s.Channels, &s.DRMAssetID, &s.DRMKID); err != nil {
 			return nil, err
 		}
 		s.HasVideo, s.HasAudio = hv.Int64 == 1, ha.Int64 == 1
 		out[s.SessionMS] = s
 	}
 	return out, rows.Err()
+}
+
+// sessionDRM is the key signaling for one encrypted recording session.
+type sessionDRM struct {
+	HLSLines   []string // #EXT-X-KEY lines
+	Protection string   // rendered <ContentProtection> elements
+}
+
+// sessionKeys looks up the keys of every encrypted session in sessions.
+// An encrypted session whose keys can't be had fails the whole manifest:
+// listing its segments without key signaling would only break players.
+func (e *Engine) sessionKeys(ctx context.Context, app, stream string, sessions map[int64]sessionRow) (map[int64]sessionDRM, error) {
+	var out map[int64]sessionDRM
+	for ms, s := range sessions {
+		if s.DRMAssetID == "" {
+			continue
+		}
+		e.mu.Lock()
+		lookup := e.keyLookup
+		e.mu.Unlock()
+		if lookup == nil {
+			return nil, fmt.Errorf("dvr: session %d is DRM-encrypted but no key lookup is configured", ms)
+		}
+		ks, err := lookup(ctx, app, stream, s.DRMAssetID)
+		if err != nil {
+			return nil, fmt.Errorf("dvr: keys for session %d: %w", ms, err)
+		}
+		kid, err := parseKID(s.DRMKID)
+		if err != nil {
+			return nil, fmt.Errorf("dvr: session %d: %w", ms, err)
+		}
+		var cp strings.Builder
+		for _, p := range dash.ProtectionFor(ks, kid) {
+			b, err := xml.Marshal(p)
+			if err != nil {
+				return nil, err
+			}
+			cp.WriteString("      ")
+			cp.Write(b)
+			cp.WriteByte('\n')
+		}
+		if out == nil {
+			out = map[int64]sessionDRM{}
+		}
+		out[ms] = sessionDRM{HLSLines: ks.HLSMediaLines(kid), Protection: cp.String()}
+	}
+	return out, nil
+}
+
+func parseKID(s string) ([16]byte, error) {
+	var k [16]byte
+	b, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
+	if err != nil || len(b) != 16 {
+		return k, fmt.Errorf("bad DRM kid %q", s)
+	}
+	copy(k[:], b)
+	return k, nil
 }

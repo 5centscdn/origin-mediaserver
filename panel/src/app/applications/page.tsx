@@ -57,8 +57,10 @@ import {
   listStreamConfigs,
   deleteStreamConfig,
   getNodeInfo,
+  testApplicationDRM,
   Application,
   StreamConfig,
+  DRMTestResult,
 } from '@/lib/api'
 
 export default function ApplicationsPage() {
@@ -706,6 +708,17 @@ const defaultAppForm = {
   dvr_window_s: 0,
 }
 
+// castLabs DRMtoday settings (sent as the application's nested "drm").
+const defaultDRMForm = {
+  enabled: false,
+  staging: false,
+  user: '',
+  password: '',
+  merchant_uuid: '',
+  cpix_config_id: '',
+  asset_id: '',
+}
+
 // Text input for a secret, masked by default with a show/hide button.
 function SecretInput({
   value,
@@ -757,6 +770,9 @@ function AppModal({
   onSaved: (name: string) => void
 }) {
   const [form, setForm] = useState(defaultAppForm)
+  const [drmForm, setDRMForm] = useState(defaultDRMForm)
+  const [drmTest, setDRMTest] = useState<DRMTestResult | null>(null)
+  const [drmTesting, setDRMTesting] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // Shares the 'node' SWR cache key with Dashboard/Settings — no extra request.
@@ -785,9 +801,20 @@ function AppModal({
         dvr_enabled: edit.dvr_enabled ?? false,
         dvr_window_s: edit.dvr_window_s ?? 0,
       })
+      setDRMForm({
+        enabled: edit.drm?.enabled ?? false,
+        staging: edit.drm?.staging ?? false,
+        user: edit.drm?.user ?? '',
+        password: '',
+        merchant_uuid: edit.drm?.merchant_uuid ?? '',
+        cpix_config_id: edit.drm?.cpix_config_id ?? '',
+        asset_id: edit.drm?.asset_id ?? '',
+      })
     } else {
       setForm(defaultAppForm)
+      setDRMForm(defaultDRMForm)
     }
+    setDRMTest(null)
     setErr(null)
   })
 
@@ -798,7 +825,10 @@ function AppModal({
     try {
       // An empty password field on edit means "keep the current one".
       const { push_password, ...rest } = form
-      const data = push_password || !edit ? form : rest
+      const base = push_password || !edit ? form : rest
+      // Same for the DRMtoday password.
+      const { password: drmPassword, ...drmRest } = drmForm
+      const data = { ...base, drm: drmPassword ? drmForm : drmRest }
       if (edit) {
         await updateApplication(edit.id, data)
       } else {
@@ -1007,6 +1037,125 @@ function AppModal({
             <div className="space-y-1 break-all rounded-md border border-border bg-elevated/40 px-3 py-2 font-mono text-xs text-fg-secondary">
               <div>/{appPath}/&lt;stream&gt;/playlist_dvr.m3u8</div>
               <div>/{appPath}/&lt;stream&gt;/manifest_dvr.mpd</div>
+            </div>
+          )}
+        </FormSection>
+
+        <FormSection
+          title="DRM (castLabs DRMtoday)"
+          description="Encrypts this application's streams (cbcs) for Widevine, PlayReady and FairPlay on HLS, LL-HLS, DASH and rewind. HLS switches to fMP4; MPEG-TS, RTMP/SRT playback and WHEP are refused for protected streams."
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Toggle
+              checked={drmForm.enabled}
+              onChange={(v) => setDRMForm({ ...drmForm, enabled: v })}
+              label="Enable DRM"
+              description="Streams play only once DRMtoday has returned their keys"
+            />
+            <Toggle
+              checked={drmForm.staging}
+              onChange={(v) => setDRMForm({ ...drmForm, staging: v })}
+              label="Staging environment"
+              description="Use DRMtoday staging (auth/fe.staging.drmtoday.com)"
+            />
+            <FormField label="API user" required={drmForm.enabled} hint="A DRMtoday API account (Members → Users), no dashboard access needed">
+              <input
+                value={drmForm.user}
+                onChange={(e) => setDRMForm({ ...drmForm, user: e.target.value })}
+                className={inputClass}
+                autoComplete="off"
+                required={drmForm.enabled}
+              />
+            </FormField>
+            <FormField
+              label="API password"
+              required={drmForm.enabled && !edit?.drm?.has_password}
+              hint={edit?.drm?.has_password ? 'Set. Leave blank to keep the current password' : undefined}
+            >
+              <SecretInput
+                label="DRMtoday password"
+                value={drmForm.password}
+                onChange={(v) => setDRMForm({ ...drmForm, password: v })}
+                placeholder={edit?.drm?.has_password ? '••••••••' : ''}
+                required={drmForm.enabled && !edit?.drm?.has_password}
+              />
+            </FormField>
+            <FormField label="Merchant (organization) UUID" required={drmForm.enabled} hint="Shown in the DRMtoday dashboard's API endpoints">
+              <input
+                value={drmForm.merchant_uuid}
+                onChange={(e) => setDRMForm({ ...drmForm, merchant_uuid: e.target.value })}
+                className={inputClass + ' font-mono'}
+                spellCheck={false}
+                required={drmForm.enabled}
+              />
+            </FormField>
+            <FormField label="CPIX config ID" required={drmForm.enabled} hint="Configuration → Ingest settings in DRMtoday">
+              <input
+                value={drmForm.cpix_config_id}
+                onChange={(e) => setDRMForm({ ...drmForm, cpix_config_id: e.target.value })}
+                className={inputClass + ' font-mono'}
+                spellCheck={false}
+                required={drmForm.enabled}
+              />
+            </FormField>
+            <FormField
+              label="Asset ID"
+              hint="DRMtoday asset per stream. {app}, {stream} and {group} (the ABR group, else the stream) are filled in; blank = {app}_{group}"
+            >
+              <input
+                value={drmForm.asset_id}
+                onChange={(e) => setDRMForm({ ...drmForm, asset_id: e.target.value })}
+                className={inputClass + ' font-mono'}
+                placeholder="{app}_{group}"
+                spellCheck={false}
+              />
+            </FormField>
+          </div>
+          {edit && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  loading={drmTesting}
+                  onClick={async () => {
+                    setDRMTesting(true)
+                    setDRMTest(null)
+                    try {
+                      setDRMTest(await testApplicationDRM(edit.id))
+                    } catch (e: any) {
+                      setDRMTest({ ok: false, asset_id: '', error: e?.message ?? 'Test failed' })
+                    } finally {
+                      setDRMTesting(false)
+                    }
+                  }}
+                >
+                  Test saved settings
+                </Button>
+                <span className="text-xs text-fg-muted">Fetches keys for a stream named “test”. Save first to test changes.</span>
+              </div>
+              {drmTest && (
+                <div
+                  className={
+                    'rounded-md border px-3 py-2 text-xs ' +
+                    (drmTest.ok ? 'border-success/40 bg-success/10 text-fg' : 'border-danger/40 bg-danger/10 text-fg')
+                  }
+                >
+                  {drmTest.ok ? (
+                    <>
+                      <div className="mb-1 font-medium">
+                        DRMtoday returned {drmTest.keys?.length ?? 0} key(s) for asset <span className="font-mono">{drmTest.asset_id}</span>
+                      </div>
+                      {(drmTest.keys ?? []).map((k) => (
+                        <div key={k.kid} className="break-all font-mono text-fg-secondary">
+                          {k.use}: {k.kid} — {(k.systems ?? []).join(', ') || 'no DRM systems'}
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="break-all">{drmTest.error}</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </FormSection>

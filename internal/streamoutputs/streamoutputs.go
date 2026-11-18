@@ -16,6 +16,7 @@ import (
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/dash"
 	"github.com/5centscdn/origin-mediaserver/internal/db"
+	"github.com/5centscdn/origin-mediaserver/internal/drm"
 	"github.com/5centscdn/origin-mediaserver/internal/dvr"
 	"github.com/5centscdn/origin-mediaserver/internal/hls"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
@@ -159,8 +160,39 @@ func apply(
 	outDVBDash = outDVBDash && cfg.DASH.DVB.Enabled
 	outDVBSubs = outDVBSubs && cfg.DASH.DVB.SubtitlesEnabled
 
+	start := func(keys *drm.KeySet) {
+		startOutputs(ctx, outputsCancel, cfg, dvrEngine, hlsPlaylists, stream, m, keys,
+			outHLS, outDASH, outDVR, outDVBDash, outDVBSubs, scte35Mode, adMarkerFormat, dvrOpts)
+	}
+	if on, assetID := resolveDRM(appCfg, streamCfg, stream); on {
+		// Protected before anything starts, so clear outputs refuse it
+		// from the first moment; encrypted outputs start once keys arrive.
+		stream.SetDRM(media.DRMState{Protected: true, AssetID: assetID})
+		dvrOpts.DRMAssetID = assetID
+		startWithKeys(ctx, appCfg, stream, assetID, start)
+		return
+	}
+	stream.SetDRM(media.DRMState{})
+	start(nil)
+}
+
+// startOutputs starts the HLS/DASH packagers and DVR recording, encrypted
+// with keys when non-nil.
+func startOutputs(
+	ctx context.Context,
+	outputsCancel context.CancelFunc,
+	cfg *config.Config,
+	dvrEngine *dvr.Engine,
+	hlsPlaylists *hls.PlaylistRegistry,
+	stream *media.Stream,
+	m *metrics.Metrics,
+	keys *drm.KeySet,
+	outHLS, outDASH, outDVR, outDVBDash, outDVBSubs bool,
+	scte35Mode, adMarkerFormat string,
+	dvrOpts dvr.Options,
+) {
 	if outHLS {
-		packager, err := hls.NewPackager(cfg, stream, cfg.Server.DataDir, hlsPlaylists)
+		packager, err := hls.NewPackagerWithOptions(cfg, stream, cfg.Server.DataDir, hlsPlaylists, hls.Options{DRM: keys})
 		if err != nil {
 			slog.Error("hls packager init", "stream", stream.Key, "err", err)
 			outputsCancel()
@@ -179,6 +211,9 @@ func apply(
 			slog.Error("dash packager init", "stream", stream.Key, "err", err)
 		} else {
 			dashPackager.SetDVBConfig(outDVBDash, outDVBSubs)
+			if keys != nil {
+				dashPackager.SetDRM(keys)
+			}
 			go dashPackager.Run(ctx)
 			slog.Info("DASH packager started", "stream", stream.Key,
 				"url", cfg.DASH.PathPrefix+"/"+stream.Key.App+"/"+stream.Key.Name+"/manifest.mpd")
@@ -186,6 +221,11 @@ func apply(
 	}
 
 	if outDVR {
+		if keys != nil {
+			dvrOpts.DRM = keys
+		} else {
+			dvrOpts.DRMAssetID = ""
+		}
 		dvrEngine.StartRecording(ctx, stream, dvrOpts)
 	}
 }

@@ -103,6 +103,7 @@ var migrations = []migration{
 	{14, schemav14},
 	{15, schemav15},
 	{16, schemav16},
+	{17, schemav17},
 }
 
 // ─── Schema v1: core tables ───────────────────────────────────────────────────
@@ -492,4 +493,26 @@ ALTER TABLE pull_sources ADD COLUMN primary_check_s INTEGER NOT NULL DEFAULT 30;
 // DB.PublishLimits and media.Registry.RegisterLimited.
 const schemav16 = `
 ALTER TABLE stream_configs ADD COLUMN max_streams INTEGER NOT NULL DEFAULT 0;
+`
+
+// schemav17: castLabs DRMtoday DRM (internal/drm). Per application: the
+// DRMtoday API account (drm_password stored as given: CAS login needs it
+// in the clear, like push_password), merchant UUID, CPIX ingest config and
+// the asset ID template ("" = "{app}_{group}"). Per stream config:
+// drm_enabled -1/0/1 and an asset ID override ("" = inherit).
+// dvr_sessions remember the asset each recording was encrypted under
+// ("" = clear), so its rewind playlists keep the right key signaling after
+// the app's DRM settings change.
+const schemav17 = `
+ALTER TABLE applications ADD COLUMN drm_enabled        INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE applications ADD COLUMN drm_staging        INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE applications ADD COLUMN drm_user           TEXT NOT NULL DEFAULT '';
+ALTER TABLE applications ADD COLUMN drm_password       TEXT NOT NULL DEFAULT '';
+ALTER TABLE applications ADD COLUMN drm_merchant_uuid  TEXT NOT NULL DEFAULT '';
+ALTER TABLE applications ADD COLUMN drm_cpix_config_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE applications ADD COLUMN drm_asset_id       TEXT NOT NULL DEFAULT '';
+ALTER TABLE stream_configs ADD COLUMN drm_enabled  INTEGER NOT NULL DEFAULT -1;
+ALTER TABLE stream_configs ADD COLUMN drm_asset_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE dvr_sessions ADD COLUMN drm_asset_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE dvr_sessions ADD COLUMN drm_kid      TEXT NOT NULL DEFAULT '';
 `

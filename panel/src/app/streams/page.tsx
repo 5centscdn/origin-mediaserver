@@ -264,7 +264,17 @@ function StreamsContent() {
                       <StatusDot status="live" />
                       <span className="font-medium text-fg">{s.name}</span>
                       <span className="sr-only">live</span>
+                      {s.drm_protected && (
+                        <Badge variant={s.drm_error ? 'red' : 'purple'} mono>
+                          DRM
+                        </Badge>
+                      )}
                     </div>
+                    {s.drm_protected && s.drm_error && (
+                      <Truncate max="max-w-[260px]" className="text-xs text-danger">
+                        Waiting for keys: {s.drm_error}
+                      </Truncate>
+                    )}
                   </TD>
                   <TD>
                     <div className="flex flex-col items-start gap-1">

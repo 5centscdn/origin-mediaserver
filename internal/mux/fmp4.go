@@ -3,6 +3,7 @@ package mux
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -64,6 +65,13 @@ type FMP4Track struct {
 	// (WebVTT/WVTTSampleEntry, see writeWVTT and internal/webvtt). Ignored
 	// for non-text tracks.
 	TextFormat string
+
+	// Encryption, when set, makes the track cbcs-encrypted (cbcs.go):
+	// encv/enca + sinf in the init segment, pssh in moov, and encrypted
+	// samples with saiz/saio/senc in every fragment. Only H.264 video and
+	// AAC audio can be encrypted; any other track with Encryption set is
+	// an error rather than being written in the clear.
+	Encryption *TrackEncryption
 }
 
 // Sample represents one coded frame (video access unit or audio frame).
@@ -108,12 +116,30 @@ func (m *FMP4Muxer) WriteMediaSegment(w io.Writer, trackIdx int, samples []Sampl
 	}
 	track := m.tracks[trackIdx]
 
+	var senc *sencInfo
+	if track.Encryption != nil {
+		if !encryptable(track) {
+			return fmt.Errorf("fmp4: track %d: codec can't be cbcs-encrypted", track.TrackID)
+		}
+		enc, subs, err := track.Encryption.encryptSamples(track, samples)
+		if err != nil {
+			return err
+		}
+		samples, senc = enc, &sencInfo{subs: subs}
+	}
+
 	m.seqNum++
 
 	var buf bytes.Buffer
-	dataOffsetPos, err := m.writeMoof(&buf, track, samples, m.seqNum, baseDecodeTime)
+	patch, err := m.writeMoof(&buf, track, samples, senc, m.seqNum, baseDecodeTime)
 	if err != nil {
 		return err
+	}
+	dataOffsetPos := patch.dataOffset
+	if senc != nil {
+		// saio offsets are relative to the moof start (default-base-is-moof),
+		// which is the start of buf.
+		binary.BigEndian.PutUint32(buf.Bytes()[patch.saioField:], uint32(patch.sencData))
 	}
 
 	// trun's data_offset is measured from the start of this moof box (tfhd's
@@ -163,10 +189,16 @@ func (m *FMP4Muxer) writeMoov(w *bytes.Buffer) error {
 
 	// one trak per track
 	for _, t := range m.tracks {
+		if t.Encryption != nil && !encryptable(t) {
+			return fmt.Errorf("fmp4: track %d: codec can't be cbcs-encrypted", t.TrackID)
+		}
 		var trak bytes.Buffer
 		writeTrak(&trak, t)
 		writeBox(&moov, "trak", trak.Bytes())
 	}
+
+	// pssh (encrypted tracks only), before mvex as CMAF orders them.
+	writePSSH(&moov, m.tracks)
 
 	// mvex (needed for fragmented MP4)
 	var mvex bytes.Buffer
@@ -388,6 +420,11 @@ func writeAVC1(w *bytes.Buffer, t *FMP4Track) {
 		writeBox(&avc1, "avcC", avcC.Bytes())
 	}
 
+	if t.Encryption != nil {
+		writeSinf(&avc1, t, "avc1")
+		writeBox(w, "encv", avc1.Bytes())
+		return
+	}
 	writeBox(w, "avc1", avc1.Bytes())
 }
 
@@ -439,6 +476,11 @@ func writeMP4A(w *bytes.Buffer, t *FMP4Track) {
 		writeBox(&mp4a, "esds", esds.Bytes())
 	}
 
+	if t.Encryption != nil {
+		writeSinf(&mp4a, t, "mp4a")
+		writeBox(w, "enca", mp4a.Bytes())
+		return
+	}
 	writeBox(w, "mp4a", mp4a.Bytes())
 }
 
@@ -456,10 +498,19 @@ func writeTrex(w *bytes.Buffer, trackID uint32) {
 
 // ─── moof ────────────────────────────────────────────────────────────────────
 
-// writeMoof writes a moof box to w and returns the absolute byte offset
-// (within w, counted from w's length at entry) of trun's data_offset
-// placeholder field, so the caller can patch it once mdat's position is known.
-func (m *FMP4Muxer) writeMoof(w *bytes.Buffer, t *FMP4Track, samples []Sample, seqNum uint32, baseDecodeTime int64) (int, error) {
+// moofPatch holds absolute offsets within the buffer writeMoof wrote to:
+// trun's data_offset field and, for encrypted tracks, saio's offset field
+// and the first senc sample entry (relative to the moof start, which
+// WriteMediaSegment's buffer begins with).
+type moofPatch struct {
+	dataOffset int
+	saioField  int
+	sencData   int
+}
+
+// writeMoof writes a moof box to w and returns the absolute byte offsets
+// (within w) the caller patches once mdat's position is known.
+func (m *FMP4Muxer) writeMoof(w *bytes.Buffer, t *FMP4Track, samples []Sample, senc *sencInfo, seqNum uint32, baseDecodeTime int64) (moofPatch, error) {
 	var moof bytes.Buffer
 
 	// mfhd
@@ -469,25 +520,31 @@ func (m *FMP4Muxer) writeMoof(w *bytes.Buffer, t *FMP4Track, samples []Sample, s
 
 	// traf
 	var traf bytes.Buffer
-	trafOffset, err := writeTraf(&traf, t, samples, baseDecodeTime)
+	tp, err := writeTraf(&traf, t, samples, senc, baseDecodeTime)
 	if err != nil {
-		return 0, err
+		return moofPatch{}, err
 	}
 	trafBoxStart := moof.Len()
 	writeBox(&moof, "traf", traf.Bytes())
-	moofOffset := trafBoxStart + 8 + trafOffset // +8 = traf's own box header
 
 	boxStart := w.Len()
 	if err := writeBox(w, "moof", moof.Bytes()); err != nil {
-		return 0, err
+		return moofPatch{}, err
 	}
-	return boxStart + 8 + moofOffset, nil // +8 = moof's own box header
+	// +8s: traf's and moof's own box headers.
+	abs := func(trafOff int) int { return boxStart + 8 + trafBoxStart + 8 + trafOff }
+	p := moofPatch{dataOffset: abs(tp.dataOffset)}
+	if senc != nil {
+		p.saioField = abs(tp.saioField)
+		p.sencData = abs(tp.sencData) - boxStart
+	}
+	return p, nil
 }
 
-// writeTraf writes a traf box to w and returns the absolute byte offset
-// (within w, counted from w's length at entry) of trun's data_offset
-// placeholder field.
-func writeTraf(w *bytes.Buffer, t *FMP4Track, samples []Sample, baseDecodeTime int64) (int, error) {
+// writeTraf writes a traf box body to w and returns the byte offsets
+// (within w) of trun's data_offset placeholder and, with senc, of saio's
+// offset field and senc's first sample entry.
+func writeTraf(w *bytes.Buffer, t *FMP4Track, samples []Sample, senc *sencInfo, baseDecodeTime int64) (moofPatch, error) {
 	// tfhd
 	var tfhd bytes.Buffer
 	tfhd.Write([]byte{0x00, 0x02, 0x00, 0x00}) // flags: default-base-is-moof
@@ -503,7 +560,15 @@ func writeTraf(w *bytes.Buffer, t *FMP4Track, samples []Sample, baseDecodeTime i
 
 	// trun — tfhd and tfdt are already appended to w, so writeTrun's own
 	// w.Len()-based offset calculation naturally lands at the right spot.
-	return writeTrun(w, t, samples)
+	off, err := writeTrun(w, t, samples)
+	if err != nil {
+		return moofPatch{}, err
+	}
+	p := moofPatch{dataOffset: off}
+	if senc != nil {
+		p.saioField, p.sencData = writeSencBoxes(w, senc)
+	}
+	return p, nil
 }
 
 // writeTrun writes a trun box to w and returns the absolute byte offset

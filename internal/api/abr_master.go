@@ -60,20 +60,58 @@ func (s *Server) liveABRTracks(ctx context.Context, app, name string) ([]abrTrac
 
 // renderABRMaster renders the live master over tracks' live streams; ok is
 // false when none is live.
+//
+// DRM-protected variants are listed only once their keys are in hand (no
+// segments exist before that), and the master carries their
+// #EXT-X-SESSION-KEY lines.
 func (s *Server) renderABRMaster(tracks []abrTrack) (string, bool) {
-	var sb strings.Builder
-	sb.WriteString("#EXTM3U\n")
-	sb.WriteString("#EXT-X-VERSION:3\n")
+	var body strings.Builder
+	var keyLines []string
+	seen := map[string]bool{}
 	live := 0
 	for _, t := range tracks {
 		st := s.registry.Get(media.StreamKey{App: t.app, Name: t.stream})
 		if st == nil {
 			continue
 		}
+		if d := st.DRM(); d.Protected {
+			if len(d.HLSMasterLines) == 0 {
+				continue
+			}
+			for _, l := range d.HLSMasterLines {
+				if !seen[l] {
+					seen[l] = true
+					keyLines = append(keyLines, l)
+				}
+			}
+		}
 		live++
-		fmt.Fprintf(&sb, "#EXT-X-STREAM-INF:%s\n%s/%s/chunks.m3u8\n", streamInf(t, st), t.app, t.stream)
+		fmt.Fprintf(&body, "#EXT-X-STREAM-INF:%s\n%s/%s/chunks.m3u8\n", streamInf(t, st), t.app, t.stream)
 	}
+	var sb strings.Builder
+	sb.WriteString("#EXTM3U\n")
+	sb.WriteString(masterHeader(keyLines))
+	sb.WriteString(body.String())
 	return sb.String(), live > 0
+}
+
+// masterHeader is a master playlist's version line plus any DRM
+// #EXT-X-SESSION-KEY lines (SAMPLE-AES with KEYFORMAT needs version 5).
+func masterHeader(keyLines []string) string {
+	if len(keyLines) == 0 {
+		return "#EXT-X-VERSION:3\n"
+	}
+	return "#EXT-X-VERSION:5\n" + strings.Join(keyLines, "\n") + "\n"
+}
+
+// hlsCarriesAudio reports whether st's HLS segments carry its audio: the
+// TS container carries AAC/MP3/MP2, but a DRM-protected stream is fMP4
+// with AAC only (cbcs), so other audio is left out there.
+func hlsCarriesAudio(st *media.Stream, ci *media.CodecInfo) bool {
+	if !media.TSAudioCodec(ci.AudioCodec) {
+		return false
+	}
+	return !st.DRM().Protected || ci.AudioCodec == media.CodecAAC
 }
 
 // manualABRTracks loads a panel-configured group's tracks in order.
@@ -249,7 +287,7 @@ func streamInf(t abrTrack, st *media.Stream) string {
 
 	w, h, codecs := t.width, t.height, t.codecs
 	if ci != nil {
-		hasAudio := media.TSAudioCodec(ci.AudioCodec)
+		hasAudio := hlsCarriesAudio(st, ci)
 		hasVideo := !t.audioOnly && ci.VideoCodec != media.CodecUnknown
 		if w == 0 && h == 0 && hasVideo {
 			w, h = ci.Width, ci.Height

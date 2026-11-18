@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/5centscdn/origin-mediaserver/internal/drm"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/mux"
 )
@@ -295,6 +296,15 @@ func (r *recorder) startSession(ci *media.CodecInfo, dts int64, hasVideo, hasAud
 		HasVideo:  hasVideo,
 		HasAudio:  hasAudio,
 	}
+	// DRM: one key for both tracks (see Options.DRM).
+	var drmKey drm.ContentKey
+	if ks := r.opts.DRM; ks != nil {
+		drmKey = ks.AudioKey()
+		if hasVideo {
+			drmKey = ks.VideoKey(ci.Width, ci.Height)
+		}
+		sess.DRMAssetID, sess.DRMKID = r.opts.DRMAssetID, drmKey.KIDString()
+	}
 	if hasVideo {
 		vt := &mux.FMP4Track{
 			Type:      mux.TrackVideo,
@@ -304,6 +314,9 @@ func (r *recorder) startSession(ci *media.CodecInfo, dts int64, hasVideo, hasAud
 			Height:    uint16(ci.Height),
 			SPS:       ci.SPSNALu,
 			PPS:       ci.PPSNALu,
+		}
+		if r.opts.DRM != nil {
+			vt.Encryption = r.opts.DRM.Encryption(drmKey, true)
 		}
 		tracks = append(tracks, vt)
 		r.videoMux = mux.NewFMP4Muxer(vt)
@@ -322,6 +335,9 @@ func (r *recorder) startSession(ci *media.CodecInfo, dts int64, hasVideo, hasAud
 			AACConfig:  ci.AACConfig,
 			SampleRate: uint32(sampleRate),
 			Channels:   uint8(mux.ParseAACChannels(ci.AACConfig)),
+		}
+		if r.opts.DRM != nil {
+			at.Encryption = r.opts.DRM.Encryption(drmKey, false)
 		}
 		tracks = append(tracks, at)
 		r.audioMux = mux.NewFMP4Muxer(at)
@@ -491,6 +507,8 @@ type sessionRow struct {
 	Height      int
 	SampleRate  int
 	Channels    int
+	DRMAssetID  string // "" = clear
+	DRMKID      string // lowercase UUID of the key both tracks use
 }
 
 type segmentRow struct {
@@ -539,10 +557,12 @@ func (e *Engine) insertSession(ctx context.Context, key media.StreamKey, s sessi
 	_, err := e.database.ExecContext(ctx, `
 		INSERT OR REPLACE INTO dvr_sessions
 		  (app_name, stream_name, session_ms, dir_path, has_video, has_audio,
-		   video_codecs, audio_codecs, width, height, sample_rate, channels)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   video_codecs, audio_codecs, width, height, sample_rate, channels,
+		   drm_asset_id, drm_kid)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		key.App, key.Name, s.SessionMS, s.Dir, boolToInt(s.HasVideo), boolToInt(s.HasAudio),
-		s.VideoCodecs, s.AudioCodecs, s.Width, s.Height, s.SampleRate, s.Channels)
+		s.VideoCodecs, s.AudioCodecs, s.Width, s.Height, s.SampleRate, s.Channels,
+		s.DRMAssetID, s.DRMKID)
 	return err
 }
 

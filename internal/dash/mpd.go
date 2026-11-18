@@ -50,6 +50,10 @@ type ManifestParams struct {
 	AudioCodecs                    string
 	AudioSampleRate, AudioChannels int
 
+	// VideoProtection/AudioProtection are the DRM <ContentProtection>
+	// elements (ProtectionFor) of an encrypted stream; nil = clear.
+	VideoProtection, AudioProtection []ContentProtection
+
 	// HasText enables the text/subtitle AdaptationSet (codecs="stpp" or
 	// "wvtt" depending on DVBProfile), written by Packager's text track.
 	HasText bool
@@ -116,7 +120,11 @@ type mpdXML struct {
 	// XmlnsDVB declares the "dvb" namespace prefix used by BaseURL's
 	// dvb:priority/dvb:weight attributes below — present only when
 	// DVBProfile is set.
-	XmlnsDVB              string `xml:"xmlns:dvb,attr,omitempty"`
+	XmlnsDVB string `xml:"xmlns:dvb,attr,omitempty"`
+	// XmlnsCENC/XmlnsMSPR declare the prefixes DRM ContentProtection
+	// elements use (cenc:default_KID, cenc:pssh, mspr:pro).
+	XmlnsCENC             string `xml:"xmlns:cenc,attr,omitempty"`
+	XmlnsMSPR             string `xml:"xmlns:mspr,attr,omitempty"`
 	Profiles              string `xml:"profiles,attr"`
 	Type                  string `xml:"type,attr"`
 	AvailabilityStartTime string `xml:"availabilityStartTime,attr"`
@@ -170,12 +178,15 @@ type adaptationSetXML struct {
 	// silently never activated without this explicit hint. Confirmed by
 	// diffing against dash.js's own reference EBU-TT-D sample stream, whose
 	// text AdaptationSet declares both.
-	ContentType     string              `xml:"contentType,attr,omitempty"`
-	Lang            string              `xml:"lang,attr,omitempty"`
-	Role            *roleXML            `xml:"Role,omitempty"`
-	Accessibility   *roleXML            `xml:"Accessibility,omitempty"`
-	SegmentTemplate segmentTemplateXML  `xml:"SegmentTemplate"`
-	Representations []representationXML `xml:"Representation"`
+	ContentType string `xml:"contentType,attr,omitempty"`
+	Lang        string `xml:"lang,attr,omitempty"`
+	// ContentProtection precedes Role/SegmentTemplate, as the MPD schema
+	// orders AdaptationSet children.
+	ContentProtection []ContentProtection `xml:"ContentProtection,omitempty"`
+	Role              *roleXML            `xml:"Role,omitempty"`
+	Accessibility     *roleXML            `xml:"Accessibility,omitempty"`
+	SegmentTemplate   segmentTemplateXML  `xml:"SegmentTemplate"`
+	Representations   []representationXML `xml:"Representation"`
 }
 
 // roleXML renders both <Role> and <Accessibility> (identical
@@ -256,6 +267,9 @@ type representationXML struct {
 	Height            int                           `xml:"height,attr,omitempty"`
 	AudioSamplingRate int                           `xml:"audioSamplingRate,attr,omitempty"`
 	AudioChannelConf  *audioChannelConfigurationXML `xml:"AudioChannelConfiguration"`
+	// ContentProtection per Representation: an ABR group's renditions can
+	// use different keys (DRMtoday picks keys by resolution).
+	ContentProtection []ContentProtection `xml:"ContentProtection,omitempty"`
 
 	// BaseURL, if set, overrides the Period/AdaptationSet BaseURL for this
 	// Representation only — used by RenderGroupMPD to point each ABR
@@ -308,9 +322,10 @@ func RenderMPD(p ManifestParams) ([]byte, error) {
 
 	if p.HasVideo {
 		m.Period.AdaptationSets = append(m.Period.AdaptationSets, adaptationSetXML{
-			MimeType:         "video/mp4",
-			SegmentAlignment: true,
-			SegmentTemplate:  buildSegmentTemplate(p.VideoTimeline, segDurMs, "init-video.mp4", "seg-video-$Number$.m4s"),
+			MimeType:          "video/mp4",
+			SegmentAlignment:  true,
+			ContentProtection: p.VideoProtection,
+			SegmentTemplate:   buildSegmentTemplate(p.VideoTimeline, segDurMs, "init-video.mp4", "seg-video-$Number$.m4s"),
 			Representations: []representationXML{{
 				ID:        "video",
 				Codecs:    p.VideoCodecs,
@@ -323,9 +338,10 @@ func RenderMPD(p ManifestParams) ([]byte, error) {
 
 	if p.HasAudio {
 		m.Period.AdaptationSets = append(m.Period.AdaptationSets, adaptationSetXML{
-			MimeType:         "audio/mp4",
-			SegmentAlignment: true,
-			SegmentTemplate:  buildSegmentTemplate(p.AudioTimeline, segDurMs, "init-audio.mp4", "seg-audio-$Number$.m4s"),
+			MimeType:          "audio/mp4",
+			SegmentAlignment:  true,
+			ContentProtection: p.AudioProtection,
+			SegmentTemplate:   buildSegmentTemplate(p.AudioTimeline, segDurMs, "init-audio.mp4", "seg-audio-$Number$.m4s"),
 			Representations: []representationXML{{
 				ID:                "audio",
 				Codecs:            p.AudioCodecs,
@@ -376,6 +392,9 @@ func RenderMPD(p ManifestParams) ([]byte, error) {
 		})
 	}
 
+	if len(p.VideoProtection) > 0 || len(p.AudioProtection) > 0 {
+		m.XmlnsCENC, m.XmlnsMSPR = NSCENC, NSMSPR
+	}
 	body, err := xml.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal mpd: %w", err)
@@ -405,6 +424,9 @@ type GroupVariantParams struct {
 	HasAudio                       bool
 	AudioCodecs                    string
 	AudioSampleRate, AudioChannels int
+
+	// VideoProtection/AudioProtection: see ManifestParams.
+	VideoProtection, AudioProtection []ContentProtection
 }
 
 // GroupManifestParams carries everything needed to render a multi-bitrate
@@ -496,6 +518,8 @@ func RenderGroupMPD(p GroupManifestParams) ([]byte, error) {
 				Width:     v.VideoWidth,
 				Height:    v.VideoHeight,
 				BaseURL:   baseURL,
+
+				ContentProtection: v.VideoProtection,
 			})
 		}
 
@@ -510,7 +534,12 @@ func RenderGroupMPD(p GroupManifestParams) ([]byte, error) {
 					Value:       fmt.Sprintf("%d", v.AudioChannels),
 				},
 				BaseURL: baseURL,
+
+				ContentProtection: v.AudioProtection,
 			})
+		}
+		if len(v.VideoProtection) > 0 || len(v.AudioProtection) > 0 {
+			m.XmlnsCENC, m.XmlnsMSPR = NSCENC, NSMSPR
 		}
 	}
 

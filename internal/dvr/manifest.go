@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/5centscdn/origin-mediaserver/internal/dash"
 )
 
 type hlsKind int
@@ -18,8 +20,10 @@ const (
 // renderHLS builds a media playlist over segs (ascending msn). Each
 // session gets its own EXT-X-MAP and starts with EXT-X-DISCONTINUITY, and
 // EXT-X-DISCONTINUITY-SEQUENCE comes from the stored per-stream counter so
-// it stays correct as old segments slide out of a live playlist.
-func renderHLS(segs []segmentRow, kind hlsKind, prefix string, segDurS int) string {
+// it stays correct as old segments slide out of a live playlist. An
+// encrypted session (keys) gets its #EXT-X-KEY lines after its EXT-X-MAP;
+// a clear session after an encrypted one gets METHOD=NONE.
+func renderHLS(segs []segmentRow, kind hlsKind, prefix string, segDurS int, keys map[int64]sessionDRM) string {
 	target := segDurS
 	for _, s := range segs {
 		if d := int(math.Ceil(float64(s.DurationMS) / 1000)); d > target {
@@ -42,6 +46,7 @@ func renderHLS(segs []segmentRow, kind hlsKind, prefix string, segDurS int) stri
 	}
 	b.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n")
 
+	keyed := false
 	for i, s := range segs {
 		dir := fmt.Sprintf("%sdvr/%d/", prefix, s.SessionMS)
 		if i == 0 || s.SessionMS != segs[i-1].SessionMS {
@@ -49,6 +54,15 @@ func renderHLS(segs []segmentRow, kind hlsKind, prefix string, segDurS int) stri
 				b.WriteString("#EXT-X-DISCONTINUITY\n")
 			}
 			fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%sinit.mp4\"\n", dir)
+			if k, ok := keys[s.SessionMS]; ok {
+				for _, l := range k.HLSLines {
+					b.WriteString(l + "\n")
+				}
+				keyed = true
+			} else if keyed {
+				b.WriteString("#EXT-X-KEY:METHOD=NONE\n")
+				keyed = false
+			}
 			fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n",
 				time.UnixMilli(s.StartMS).UTC().Format("2006-01-02T15:04:05.000Z"))
 		}
@@ -68,6 +82,7 @@ type mpdOptions struct {
 	ShiftS   int64 // timeshift delay (dynamic only)
 	DepthS   int64 // timeShiftBufferDepth (dynamic only)
 	Sessions map[int64]sessionRow
+	Keys     map[int64]sessionDRM // encrypted sessions only
 }
 
 // mpdPeriod is a run of segments that share one session and have
@@ -107,6 +122,9 @@ func renderMPD(segs []segmentRow, o mpdOptions) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	b.WriteString(`<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-live:2011"`)
+	if len(o.Keys) > 0 {
+		fmt.Fprintf(&b, ` xmlns:cenc="%s" xmlns:mspr="%s"`, dash.NSCENC, dash.NSMSPR)
+	}
 	if o.Dynamic {
 		ast := time.UnixMilli(dvrEpochMS + o.ShiftS*1000).UTC().Format(time.RFC3339)
 		if o.ShiftS == 0 {
@@ -139,6 +157,7 @@ func renderMPD(segs []segmentRow, o mpdOptions) string {
 				bytes, dur = bytes+s.VideoBytes, dur+s.VideoDur
 			}
 			b.WriteString(`    <AdaptationSet id="1" contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1">` + "\n")
+			b.WriteString(o.Keys[p.sess.SessionMS].Protection)
 			fmt.Fprintf(&b, `      <Representation id="v" codecs="%s" bandwidth="%d"`, p.sess.VideoCodecs, bandwidth(bytes, dur))
 			if p.sess.Width > 0 && p.sess.Height > 0 {
 				fmt.Fprintf(&b, ` width="%d" height="%d"`, p.sess.Width, p.sess.Height)
@@ -153,6 +172,7 @@ func renderMPD(segs []segmentRow, o mpdOptions) string {
 				bytes, dur = bytes+s.Size-s.VideoBytes, dur+s.AudioDur
 			}
 			b.WriteString(`    <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="und" segmentAlignment="true">` + "\n")
+			b.WriteString(o.Keys[p.sess.SessionMS].Protection)
 			fmt.Fprintf(&b, `      <Representation id="a" codecs="%s" bandwidth="%d" audioSamplingRate="%d">`+"\n",
 				p.sess.AudioCodecs, bandwidth(bytes, dur), p.sess.SampleRate)
 			if p.sess.Channels > 0 {

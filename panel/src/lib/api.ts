@@ -143,6 +143,11 @@ export interface Stream {
   bitrate_bps?: number
   subscribers: number
   codec?: string
+  // DRM (castLabs DRMtoday): a protected stream is served encrypted only;
+  // drm_error is set while its outputs wait for keys.
+  drm_protected?: boolean
+  drm_asset_id?: string
+  drm_error?: string
 }
 
 export async function listStreams(): Promise<Stream[]> {
@@ -631,8 +636,48 @@ export interface Application {
   // rewind playback. config.toml's [dvr] enabled turns it on everywhere.
   dvr_enabled: boolean
   dvr_window_s: number // rewind window; 0 = global [dvr] window_seconds
+  // castLabs DRMtoday (cbcs: Widevine, PlayReady, FairPlay).
+  drm?: AppDRM
   created_at: string
   updated_at: string
+}
+
+export interface AppDRM {
+  enabled: boolean
+  staging: boolean
+  user: string
+  has_password: boolean // write-only password: reads report only this
+  merchant_uuid: string
+  cpix_config_id: string
+  asset_id: string // template: {app} {stream} {group}; '' = {app}_{group}
+}
+
+// A write of the app's DRM settings; omitted fields keep their stored value
+// (an omitted password keeps the current one).
+export interface AppDRMUpdate {
+  enabled?: boolean
+  staging?: boolean
+  user?: string
+  password?: string
+  merchant_uuid?: string
+  cpix_config_id?: string
+  asset_id?: string
+}
+
+export type ApplicationWrite = Omit<Partial<Application>, 'drm'> & { drm?: AppDRMUpdate }
+
+export interface DRMTestResult {
+  ok: boolean
+  asset_id: string
+  error?: string
+  keys?: { kid: string; use: string; systems: string[] | null }[]
+}
+
+export async function testApplicationDRM(id: string, assetId?: string): Promise<DRMTestResult> {
+  return apiFetch<DRMTestResult>(`/applications/${encodeURIComponent(id)}/drm/test`, {
+    method: 'POST',
+    body: JSON.stringify({ asset_id: assetId ?? '' }),
+  })
 }
 
 export interface StreamConfig {
@@ -654,6 +699,8 @@ export interface StreamConfig {
   scte35_mode: string      // '' = inherit from app; else disabled|passthrough|insert|hybrid
   ad_marker_format: string // '' = inherit from app
   max_streams: number      // wildcard only: concurrent publishes allowed; 0 = no limit
+  drm_enabled: number      // -1=inherit from app, 0=off, 1=on
+  drm_asset_id: string     // '' = app's asset ID template
 }
 
 export async function listApplications(): Promise<Application[]> {
@@ -661,11 +708,11 @@ export async function listApplications(): Promise<Application[]> {
   return v ?? []
 }
 
-export async function createApplication(data: Partial<Application>): Promise<Application> {
+export async function createApplication(data: ApplicationWrite): Promise<Application> {
   return apiFetch<Application>('/applications', { method: 'POST', body: JSON.stringify(data) })
 }
 
-export async function updateApplication(id: string, data: Partial<Application>): Promise<void> {
+export async function updateApplication(id: string, data: ApplicationWrite): Promise<void> {
   await apiFetch<void>(`/applications/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) })
 }
 

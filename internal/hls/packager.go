@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
+	"github.com/5centscdn/origin-mediaserver/internal/drm"
 	"github.com/5centscdn/origin-mediaserver/internal/livestore"
 	"github.com/5centscdn/origin-mediaserver/internal/media"
 	"github.com/5centscdn/origin-mediaserver/internal/metrics"
@@ -124,13 +125,31 @@ type Packager struct {
 	activeBreakEventID   uint32
 	activeBreakSCTE35    string
 
+	// drm, when set, cbcs-encrypts every fMP4 segment and LL-HLS part
+	// (internal/drm, mux/cbcs.go). It forces the fMP4 container whatever
+	// hls.container says: MPEG-TS can't carry cbcs.
+	drm *drm.KeySet
+
 	log *slog.Logger
+}
+
+// Options are per-stream packager settings resolved by streamoutputs.
+type Options struct {
+	// DRM encrypts the stream (fMP4 only; see Packager.drm).
+	DRM *drm.KeySet
 }
 
 // useFMP4 reports whether this packager should produce fMP4/CMAF segments
 // instead of MPEG-TS. Unrecognized Container values fall back to TS (the
 // pre-existing default) rather than silently doing something unexpected.
 func (p *Packager) useFMP4() bool {
+	return p.configFMP4() || p.drm != nil
+}
+
+// configFMP4 is the configured container, before DRM forces fMP4. Split
+// audio follows it, because the master playlist (api.handlePlaylist)
+// decides whether to link an audio playlist from the config alone.
+func (p *Packager) configFMP4() bool {
 	return p.cfg.HLS.Container == "fmp4" || p.cfg.HLS.Container == "cmaf"
 }
 
@@ -154,6 +173,11 @@ func (p *Packager) useSplitAudio() bool {
 // outDir is created automatically. registry may be nil (e.g. in tests) —
 // LL-HLS blocking reload just won't be able to find this stream's playlist.
 func NewPackager(cfg *config.Config, stream *media.Stream, baseDataDir string, registry *PlaylistRegistry) (*Packager, error) {
+	return NewPackagerWithOptions(cfg, stream, baseDataDir, registry, Options{})
+}
+
+// NewPackagerWithOptions is NewPackager with per-stream options.
+func NewPackagerWithOptions(cfg *config.Config, stream *media.Stream, baseDataDir string, registry *PlaylistRegistry, opts Options) (*Packager, error) {
 	// Output lives in memory (internal/livestore), addressed by the path
 	// it used to have on disk. A segment must outlive every playlist that
 	// lists it, plus time for a slow player to fetch it.
@@ -170,6 +194,7 @@ func NewPackager(cfg *config.Config, stream *media.Stream, baseDataDir string, r
 		playlist:   playlist,
 		plRegistry: registry,
 		scteState:  scte35.NewStateMachine(),
+		drm:        opts.DRM,
 		log:        slog.With("app", stream.Key.App, "stream", stream.Key.Name),
 	}
 
@@ -180,7 +205,7 @@ func NewPackager(cfg *config.Config, stream *media.Stream, baseDataDir string, r
 		playlist.EnableParts(float64(cfg.HLS.LLHls.PartDurationMs)/1000.0, float64(cfg.HLS.LLHls.HoldBackParts)*float64(cfg.HLS.LLHls.PartDurationMs)/1000.0)
 	}
 
-	if cfg.HLS.SeparateAudioTrack && p.useFMP4() {
+	if cfg.HLS.SeparateAudioTrack && p.configFMP4() {
 		if cfg.HLS.LLHls.Enabled {
 			p.log.Warn("separate_audio_track is set together with ll_hls.enabled — that combination isn't supported yet, ignoring separate_audio_track")
 		} else {
@@ -1048,6 +1073,11 @@ func (p *Packager) initFMP4MuxersSplit() error {
 			SPS:       ci.SPSNALu,
 			PPS:       ci.PPSNALu,
 		}
+		if p.drm != nil {
+			k := p.drm.KeysFor(ci.Width, ci.Height).Video
+			videoTrack.Encryption = p.drm.Encryption(k, true)
+			p.playlist.SetKeyLines(p.drm.HLSMediaLines(k.KID))
+		}
 		p.fmp4Video = mux.NewFMP4Muxer(videoTrack)
 
 		var buf bytes.Buffer
@@ -1066,6 +1096,11 @@ func (p *Packager) initFMP4MuxersSplit() error {
 			AACConfig:  ci.AACConfig,
 			SampleRate: uint32(mux.ParseAACSampleRate(ci.AACConfig)),
 			Channels:   uint8(mux.ParseAACChannels(ci.AACConfig)),
+		}
+		if p.drm != nil {
+			k := p.drm.AudioKey()
+			audioTrack.Encryption = p.drm.Encryption(k, false)
+			p.audioPlaylist.SetKeyLines(p.drm.HLSMediaLines(k.KID))
 		}
 		p.fmp4Audio = mux.NewFMP4Muxer(audioTrack)
 
@@ -1111,6 +1146,18 @@ func (p *Packager) initFMP4Muxers() error {
 		p.fmp4Video = mux.NewFMP4Muxer(videoTrack)
 	}
 
+	// DRM: a combined segment is encrypted with one key (the video key for
+	// its resolution, or the audio key for audio-only), so one set of
+	// #EXT-X-KEY tags covers it.
+	var drmKey drm.ContentKey
+	if p.drm != nil {
+		drmKey = p.drm.AudioKey()
+		if len(tracks) > 0 {
+			drmKey = p.drm.KeysFor(ci.Width, ci.Height).Video
+			tracks[0].Encryption = p.drm.Encryption(drmKey, true)
+		}
+	}
+
 	if len(ci.AACConfig) > 0 {
 		audioTrack := &mux.FMP4Track{
 			Type:       mux.TrackAudio,
@@ -1119,6 +1166,9 @@ func (p *Packager) initFMP4Muxers() error {
 			AACConfig:  ci.AACConfig,
 			SampleRate: uint32(mux.ParseAACSampleRate(ci.AACConfig)),
 			Channels:   uint8(mux.ParseAACChannels(ci.AACConfig)),
+		}
+		if p.drm != nil {
+			audioTrack.Encryption = p.drm.Encryption(drmKey, false)
 		}
 		tracks = append(tracks, audioTrack)
 		p.fmp4Audio = mux.NewFMP4Muxer(audioTrack)
@@ -1134,6 +1184,9 @@ func (p *Packager) initFMP4Muxers() error {
 	}
 	livestore.Default().WriteFile(filepath.Join(p.outDir, "init.mp4"), buf.Bytes())
 
+	if p.drm != nil {
+		p.playlist.SetKeyLines(p.drm.HLSMediaLines(drmKey.KID))
+	}
 	p.playlist.SetInitSegment("init.mp4")
 	p.fmp4InitWritten = true
 	p.log.Info("fMP4 init segment written", "video", p.fmp4Video != nil, "audio", p.fmp4Audio != nil)

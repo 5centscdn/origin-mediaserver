@@ -91,6 +91,9 @@ type Playlist struct {
 	discSeq    int     // EXT-X-DISCONTINUITY-SEQUENCE: discontinuities slid out of the window
 	maxSeen    float64 // highest segment duration seen (for TARGETDURATION)
 	initSegURI string  // fMP4/CMAF only: emits #EXT-X-MAP when set
+	// keyLines are DRM #EXT-X-KEY tags (from DRMtoday's CPIX), rendered
+	// after #EXT-X-MAP so they apply to every segment and LL-HLS part.
+	keyLines []string
 
 	// LL-HLS state — only populated when partsEnabled (see EnableParts).
 	partsEnabled  bool
@@ -184,6 +187,14 @@ func (pl *Playlist) SetInitSegment(uri string) {
 	defer pl.mu.Unlock()
 	pl.initSegURI = uri
 	_ = pl.write()
+}
+
+// SetKeyLines sets the DRM #EXT-X-KEY lines. Call before SetInitSegment,
+// so no playlist is ever written listing encrypted segments without them.
+func (pl *Playlist) SetKeyLines(lines []string) {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	pl.keyLines = append([]string(nil), lines...)
 }
 
 // SetPreloadHint records the predicted filename of the next LL-HLS part —
@@ -331,6 +342,10 @@ func (pl *Playlist) render(skipDelta bool) string {
 	}
 	if pl.initSegURI != "" {
 		fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", pl.initSegURI)
+	}
+	for _, l := range pl.keyLines {
+		b.WriteString(l)
+		b.WriteByte('\n')
 	}
 
 	keepFrom := 0

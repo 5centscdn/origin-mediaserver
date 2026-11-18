@@ -23,11 +23,21 @@ import (
 // to streamoutputs.ResolveSCTE35Mode in main.go). nil = SCTE-35 not sent.
 var SCTE35Mode func(ctx context.Context, app, stream string) string
 
+// ClearPlaybackAllowed, if set, reports whether a stream may be played
+// unencrypted; DRM-protected streams can't be (wired to
+// streamoutputs.ClearPlaybackAllowed in main.go).
+var ClearPlaybackAllowed func(ctx context.Context, st *media.Stream) bool
+
 func (s *Server) handlePlay(ctx context.Context, req gosrt.ConnRequest, key media.StreamKey) {
 	st := s.registry.Get(key)
 	if st == nil {
 		slog.Info("srt play: stream not found", "stream", key)
 		req.Reject(gosrt.REJX_NOTFOUND)
+		return
+	}
+	if f := ClearPlaybackAllowed; f != nil && !f(ctx, st) {
+		slog.Info("srt play refused: stream is DRM-protected", "stream", key)
+		req.Reject(gosrt.REJX_FORBIDDEN)
 		return
 	}
 	conn, err := req.Accept()

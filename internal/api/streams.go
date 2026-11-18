@@ -36,10 +36,15 @@ type streamResponse struct {
 	BitrateBps  int64     `json:"bitrate_bps"` // recent ingest rate (media.Bus.IngestBitrate)
 	Subscribers int       `json:"subscribers"`
 	Codec       string    `json:"codec,omitempty"`
+	// DRM: protected streams are served encrypted only; DRMError is the
+	// last DRMtoday failure while their outputs wait for keys.
+	DRMProtected bool   `json:"drm_protected,omitempty"`
+	DRMAssetID   string `json:"drm_asset_id,omitempty"`
+	DRMError     string `json:"drm_error,omitempty"`
 }
 
 func streamToResponse(s *media.Stream) streamResponse {
-	return streamResponse{
+	r := streamResponse{
 		ID:         s.Key.String(),
 		App:        s.Key.App,
 		Name:       s.Key.Name,
@@ -58,6 +63,10 @@ func streamToResponse(s *media.Stream) streamResponse {
 		Subscribers: s.Viewers.Count(),
 		Codec:       codecSummary(s.Bus.CodecInfo()),
 	}
+	if d := s.DRM(); d.Protected {
+		r.DRMProtected, r.DRMAssetID, r.DRMError = true, d.AssetID, d.Error
+	}
+	return r
 }
 
 // redactURL hides the password in a URL's userinfo ("rtsp://admin:secret@cam"

@@ -17,11 +17,15 @@ package media
 // h264SPS holds the SPS fields needed to parse slice headers and decode POC.
 type h264SPS struct {
 	profileIDC          int
+	chromaFormatIDC     int // 1 (4:2:0) unless a high profile says otherwise
 	separateColourPlane bool
 	log2MaxFrameNum     int
 	pocType             int
 	log2MaxPocLsb       int
 	frameMbsOnly        bool
+	// deltaPicOrderAlwaysZero is only meaningful for pocType 1; slice
+	// header length (H264SliceHeaderSize) needs it.
+	deltaPicOrderAlwaysZero bool
 	// maxNumReorderFrames is the VUI bitstream_restriction value: the most
 	// pictures that can precede another in decode order and follow it in
 	// display order. -1 when the SPS doesn't say.
@@ -32,6 +36,18 @@ type h264SPS struct {
 type h264PPS struct {
 	spsID                    int
 	bottomFieldPicOrderInPOC bool // bottom_field_pic_order_in_frame_present_flag
+
+	// The rest is only needed for slice header length (cbcs encryption,
+	// H264SliceHeaderSize). full is false when the PPS couldn't be read
+	// that far or uses slice groups (FMO), which that parser leaves out.
+	full                   bool
+	cabac                  bool // entropy_coding_mode_flag
+	numRefIdxL0Default     int  // num_ref_idx_l0_default_active_minus1 + 1
+	numRefIdxL1Default     int
+	weightedPred           bool
+	weightedBipredIDC      int
+	deblockingControl      bool // deblocking_filter_control_present_flag
+	redundantPicCntPresent bool
 }
 
 // unescapeRBSP removes emulation-prevention bytes (00 00 03 → 00 00) so
@@ -64,9 +80,11 @@ func parseH264SPS(nal []byte) (id int, s h264SPS, ok bool) {
 	s.profileIDC = int(br.readBits(8))
 	br.readBits(16) // constraint flags, level_idc
 	id = br.readUE()
+	s.chromaFormatIDC = 1
 	switch s.profileIDC {
 	case 100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135:
 		chroma := br.readUE()
+		s.chromaFormatIDC = chroma
 		if chroma == 3 {
 			s.separateColourPlane = br.readBits(1) == 1
 		}
@@ -101,7 +119,7 @@ func parseH264SPS(nal []byte) (id int, s h264SPS, ok bool) {
 	case 0:
 		s.log2MaxPocLsb = br.readUE() + 4
 	case 1:
-		br.readBits(1)
+		s.deltaPicOrderAlwaysZero = br.readBits(1) == 1
 		br.readSE()
 		br.readSE()
 		for n := br.readUE(); n > 0 && !br.err; n-- {
@@ -205,9 +223,27 @@ func parseH264PPS(nal []byte) (id int, p h264PPS, ok bool) {
 	br.readBits(8)
 	id = br.readUE()
 	p.spsID = br.readUE()
-	br.readBits(1) // entropy_coding_mode_flag
+	p.cabac = br.readBits(1) == 1
 	p.bottomFieldPicOrderInPOC = br.readBits(1) == 1
-	return id, p, !br.err
+	if br.err {
+		return id, p, false
+	}
+	// Fields past here only feed H264SliceHeaderSize; a failure leaves
+	// full false without affecting POC decoding.
+	if br.readUE() == 0 { // num_slice_groups_minus1
+		p.numRefIdxL0Default = br.readUE() + 1
+		p.numRefIdxL1Default = br.readUE() + 1
+		p.weightedPred = br.readBits(1) == 1
+		p.weightedBipredIDC = int(br.readBits(2))
+		br.readSE() // pic_init_qp_minus26
+		br.readSE() // pic_init_qs_minus26
+		br.readSE() // chroma_qp_index_offset
+		p.deblockingControl = br.readBits(1) == 1
+		br.readBits(1) // constrained_intra_pred_flag
+		p.redundantPicCntPresent = br.readBits(1) == 1
+		p.full = !br.err && p.numRefIdxL0Default <= 32 && p.numRefIdxL1Default <= 32
+	}
+	return id, p, true
 }
 
 // h264Slice is the part of a slice header POC decoding needs.
