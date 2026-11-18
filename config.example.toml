@@ -40,7 +40,11 @@ tls_enabled = false
 # Maximum time (ms) a publisher can be idle before disconnecting
 idle_timeout_ms = 10000
 
-# Maximum simultaneous ingest connections per application
+# Maximum simultaneous publishing connections per application (default 100,
+# negative = no limit). Counted per connection, not per stream: FMLE sending
+# all its %i renditions on one connection counts once. Players, pulls and
+# failover backups don't count. A publish past the limit gets
+# NetStream.Publish.BadName and the connection stays open.
 max_connections_per_app = 50
 
 # Routing app for encoders with only a stream key field (OBS). Publishing to

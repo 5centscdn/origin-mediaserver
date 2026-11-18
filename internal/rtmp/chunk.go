@@ -155,6 +155,11 @@ func (d *ChunkDemuxer) ReadMessage() (*Message, error) {
 			} else {
 				cs.timestamp = ts
 			}
+			// An absolute timestamp carries no delta: a Type-3 message
+			// straight after this one keeps the same timestamp (as
+			// yutopp/go-rtmp does, rather than reusing the absolute
+			// value as a delta).
+			cs.timestampDelta = 0
 			cs.buf = nil // new message starts fresh
 
 		case 1: // Type 1: 7 bytes — no message stream ID
@@ -204,6 +209,14 @@ func (d *ChunkDemuxer) ReadMessage() (*Message, error) {
 					return nil, err
 				}
 				// Re-read but value should match; just consume it.
+			}
+			// A Type-3 chunk that starts a new message (none in progress)
+			// advances the clock by the last Type-1/2 delta; only
+			// continuation chunks of one message keep it unchanged. Encoders
+			// that compress headers send a run of same-delta frames this
+			// way, which would otherwise all get one frozen timestamp.
+			if len(cs.buf) == 0 {
+				cs.timestamp += cs.timestampDelta
 			}
 		}
 

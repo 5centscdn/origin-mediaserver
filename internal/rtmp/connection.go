@@ -78,6 +78,11 @@ type conn struct {
 	routing bool
 	routed  bool
 
+	// ingestApp is the app whose publishing-connection slot this
+	// connection holds ("" = none; Server.acquireIngest). Taken at the
+	// first publish, given back when the last stream unpublishes.
+	ingestApp string
+
 	// Per-message-stream states (MSID → state).
 	// KEY DESIGN: this map is what makes FMLE %i work.
 	// One TCP connection → many MSIDs → many parallel publish streams.
@@ -131,10 +136,17 @@ func (c *conn) serve() {
 	defer c.cleanup()
 
 	// ── Step 1: RTMP handshake ───────────────────────────────────────────────
+	// Bounded by a deadline: a client that connects and sends the handshake
+	// slowly or not at all would otherwise hold a goroutine and a file
+	// descriptor forever (the message loop's idle deadline starts after
+	// it). For RTMPS this also covers the TLS handshake, which runs on the
+	// first read.
+	_ = c.nc.SetDeadline(time.Now().Add(handshakeTimeout(c.cfg.RTMP.IdleTimeoutMs)))
 	if err := doHandshake(c.nc); err != nil {
 		c.log.Debug("handshake failed", "err", err)
 		return
 	}
+	_ = c.nc.SetDeadline(time.Time{})
 
 	// Tell the client to use larger chunks for efficiency.
 	if err := c.sendSetChunkSize(c.sendChunkSize); err != nil {
@@ -206,6 +218,15 @@ func (e authRejected) Error() string {
 		return fmt.Sprintf("push login failed for user %q", e.user)
 	}
 	return "push login required, challenge sent"
+}
+
+// handshakeTimeout is how long a client gets to finish the RTMP (and TLS)
+// handshake: the configured idle timeout, or 10 s when that's disabled.
+func handshakeTimeout(idleMs int) time.Duration {
+	if idleMs > 0 {
+		return time.Duration(idleMs) * time.Millisecond
+	}
+	return 10 * time.Second
 }
 
 // isPublishing reports whether any message stream on this connection is
@@ -583,7 +604,23 @@ func (c *conn) handlePublish(msid uint32, vals []AMF0Value) error {
 	if c.dbApp != nil {
 		limits, _ = c.db.PublishLimits(context.Background(), c.dbApp.ID, streamName)
 	}
+	// [rtmp] max_connections_per_app: the connection's first publish takes
+	// a slot on the app; further renditions on it ride on that slot.
+	newSlot := false
+	if c.ingestApp == "" {
+		if !c.srv.acquireIngest(c.appName) {
+			_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName",
+				fmt.Sprintf("Too many publishing connections: at most %d on %s", c.cfg.RTMP.MaxConnsPerApp, c.appName))
+			c.log.Warn("publish refused: max_connections_per_app reached", "stream", streamName, "max", c.cfg.RTMP.MaxConnsPerApp)
+			return nil
+		}
+		c.ingestApp, newSlot = c.appName, true
+	}
 	if err := c.registry.RegisterLimited(stream, limits); err != nil {
+		if newSlot {
+			c.srv.releaseIngest(c.ingestApp)
+			c.ingestApp = ""
+		}
 		var le *media.PublishLimitError
 		if errors.As(err, &le) {
 			_ = c.sendStatusMessage(msid, "error", "NetStream.Publish.BadName",
@@ -746,6 +783,11 @@ func (c *conn) unpublishMSID(msid uint32) {
 		c.registry.Unregister(ms.stream)
 	}
 	delete(c.msgStreams, msid)
+
+	if c.ingestApp != "" && !c.isPublishing() {
+		c.srv.releaseIngest(c.ingestApp)
+		c.ingestApp = ""
+	}
 }
 
 // ─── Audio / Video data ───────────────────────────────────────────────────────

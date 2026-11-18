@@ -75,6 +75,12 @@ func NewBus() *Bus {
 
 // Subscribe returns a Subscription that receives all future packets.
 // The caller must call sub.Close() or cancel the context when done.
+//
+// On a bus that is already closed, the subscription's channel comes back
+// closed, as it would have been had it subscribed just before Close.
+// Outputs start asynchronously (RTMP's OnPublish runs in a goroutine), so
+// a publish/disconnect race can subscribe after Close; without this, that
+// subscriber's channel never closed and its output goroutine leaked.
 func (b *Bus) Subscribe(ctx context.Context) *Subscription {
 	id := b.nextID.Add(1)
 	sub := &Subscription{
@@ -83,7 +89,15 @@ func (b *Bus) Subscribe(ctx context.Context) *Subscription {
 		bus: b,
 	}
 
+	// Checked under mu: Close sets closed before taking mu and closes
+	// every subscriber it finds under it, so a subscriber is either seen
+	// by Close or sees closed here.
 	b.mu.Lock()
+	if b.closed.Load() {
+		b.mu.Unlock()
+		close(sub.ch)
+		return sub
+	}
 	b.subs[id] = sub
 	b.mu.Unlock()
 

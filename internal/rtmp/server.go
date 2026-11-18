@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/5centscdn/origin-mediaserver/internal/config"
 	"github.com/5centscdn/origin-mediaserver/internal/db"
@@ -30,6 +31,40 @@ type Server struct {
 
 	// OnUnpublish is called when a stream stops.
 	OnUnpublish func(stream *media.Stream)
+
+	// ingest counts publishing connections per application, for
+	// [rtmp] max_connections_per_app (see acquireIngest).
+	ingestMu sync.Mutex
+	ingest   map[string]int
+}
+
+// acquireIngest takes one of app's publishing-connection slots, or reports
+// false when max_connections_per_app (<= 0 = no limit) are already in use.
+// A slot is per connection, not per stream: FMLE publishes all of its %i
+// renditions on one connection and counts once. Pulls, failover backups
+// and players never publish here, so they don't count.
+func (s *Server) acquireIngest(app string) bool {
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	if s.ingest == nil {
+		s.ingest = make(map[string]int)
+	}
+	if max := s.cfg.RTMP.MaxConnsPerApp; max > 0 && s.ingest[app] >= max {
+		return false
+	}
+	s.ingest[app]++
+	return true
+}
+
+// releaseIngest gives back a slot taken by acquireIngest.
+func (s *Server) releaseIngest(app string) {
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	if s.ingest[app] <= 1 {
+		delete(s.ingest, app)
+	} else {
+		s.ingest[app]--
+	}
 }
 
 // NewServer creates an RTMP server.
