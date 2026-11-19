@@ -142,8 +142,32 @@ func (ks *KeySet) SystemsFor(kid [16]byte) []System {
 			out = append(out, s)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].SystemID < out[j].SystemID })
+	sort.SliceStable(out, func(i, j int) bool { return systemLess(out[i].SystemID, out[j].SystemID) })
 	return out
+}
+
+// systemLess orders DRM systems Widevine, PlayReady, FairPlay, then any
+// other by ID. The order is what players see in HLS key tags, DASH
+// ContentProtection and pssh boxes, and it matters: Shaka Player (4.12)
+// builds its HLS DRM config from the first key tag only, so with FairPlay
+// first (the order system IDs sort in) Chrome and Edge fail with 6001.
+// Safari plays HLS natively and picks the FairPlay tag wherever it is.
+func systemLess(a, b string) bool {
+	rank := func(id string) int {
+		switch id {
+		case SystemWidevine:
+			return 0
+		case SystemPlayReady:
+			return 1
+		case SystemFairPlay:
+			return 2
+		}
+		return 3
+	}
+	if ra, rb := rank(a), rank(b); ra != rb {
+		return ra < rb
+	}
+	return a < b
 }
 
 // PSSHFor returns the pssh boxes for kid's systems (init segment moov).
@@ -182,7 +206,7 @@ func (ks *KeySet) HLSMasterLines(kids ...[16]byte) []string {
 		if c := bytes.Compare(sys[i].KID[:], sys[j].KID[:]); c != 0 {
 			return c < 0
 		}
-		return sys[i].SystemID < sys[j].SystemID
+		return systemLess(sys[i].SystemID, sys[j].SystemID)
 	})
 	for _, s := range sys {
 		if len(kids) > 0 && !containsKID(kids, s.KID) {

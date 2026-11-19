@@ -77,9 +77,9 @@ func TestParseCPIX(t *testing.T) {
 	if len(media) != 2 || !strings.HasPrefix(media[0], "#EXT-X-KEY:") || !strings.HasPrefix(media[1], "#EXT-X-KEY:") {
 		t.Fatalf("media lines %q", media)
 	}
-	// Ordered by system ID: Widevine (edef…) sorts after FairPlay (94ce…).
-	if !strings.Contains(media[0], "skd://") {
-		t.Errorf("want FairPlay first, got %q", media[0])
+	// Widevine, then FairPlay (systemLess), whatever the CPIX order.
+	if !strings.Contains(media[1], "skd://") {
+		t.Errorf("want FairPlay last, got %q", media[1])
 	}
 	if n := len(ks.PSSHFor(k.KID)); n != 1 {
 		t.Errorf("pssh boxes %d, want 1 (FairPlay has none)", n)
@@ -88,8 +88,15 @@ func TestParseCPIX(t *testing.T) {
 		t.Errorf("master lines %d, want identical lines de-duplicated to 1", len(m))
 	}
 	sys := ks.SystemsFor(k.KID)
-	if sys[1].SystemID != SystemWidevine || sys[1].ContentProtection != "<cenc:pssh>AAAA</cenc:pssh>" {
-		t.Errorf("widevine system %+v", sys[1])
+	// Widevine first: Shaka Player only uses the first HLS key tag.
+	if sys[0].SystemID != SystemWidevine || sys[0].ContentProtection != "<cenc:pssh>AAAA</cenc:pssh>" {
+		t.Errorf("widevine system %+v", sys[0])
+	}
+	if sys[1].SystemID != SystemFairPlay {
+		t.Errorf("second system %s, want FairPlay", sys[1].SystemID)
+	}
+	if !strings.Contains(media[0], "edef8ba9") {
+		t.Errorf("first HLS key line is not Widevine: %q", media[0])
 	}
 }
 
