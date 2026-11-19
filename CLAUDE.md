@@ -388,8 +388,9 @@ its sub-router falls through to the panel's own `/dvr` page.
   reconnect or a stream reload, like other app settings. Verified
   2026-11-17 against DRMtoday staging (CPIX config with stream type
   mapping "1 key without filter – VIDEO_AUDIO"; the generator API returns
-  412 when the mapping is None): Widevine DASH plays in Chrome via
-  Shaka Player (`tools/drm-test-player.html`, Test dummy authorization,
+  412 when the mapping is None): Widevine DASH and HLS play in Chrome via
+  Shaka Player (HLS needs the Widevine key tag first: Shaka uses only the
+  first one, hence `drm.systemLess`) (`tools/drm-test-player.html`, Test dummy authorization,
   x-dt-custom-data userId=purchase, sessionId=default, merchant=5centscdn).
   PlayReady and FairPlay playback not yet tested.
 - Failover backups are `rtmp` or `mp4` only. The panel lists rtsp/srt/hls
